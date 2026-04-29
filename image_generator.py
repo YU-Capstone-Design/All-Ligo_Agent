@@ -10,6 +10,7 @@ _pipeline = None
 # 로컬 SDXL 기반 이미지 생성 모듈
 # 외부 API(OpenAI/DALL-E) 없이 RTX 4080에서 고품질 포스터 이미지를 생성합니다.
 # 모델: stabilityai/stable-diffusion-xl-base-1.0 (fp16)
+# 참고: 모델은 최초 실행 시 한 번만 다운로드되며, 이후에는 ~/.cache/huggingface/ 에 캐시됩니다.
 
 
 def get_pipeline():
@@ -32,20 +33,20 @@ def generate_image(
     prompt: str,
     negative_prompt: str = "low quality, blurry, distorted, ugly, bad anatomy, watermark, text overlap, poorly drawn",
     output_dir: str = "static/images",
-    width: int = 1024,
-    height: int = 1024,
+    width: int = 768,
+    height: int = 1344,
     num_inference_steps: int = 30,
     guidance_scale: float = 7.5,
 ) -> str:
     """
-    영어 프롬프트를 받아 SDXL로 고품질 이미지를 생성하고 파일 경로를 반환합니다.
+    영어 프롬프트를 받아 SDXL로 세로(9:16) 고품질 이미지를 생성하고 파일명을 반환합니다.
     
     Args:
         prompt: 영어 이미지 생성 프롬프트
         negative_prompt: 생성하지 말아야 할 요소들
         output_dir: 이미지 저장 디렉토리
-        width: 이미지 너비 (기본 1024)
-        height: 이미지 높이 (기본 1024)
+        width: 이미지 너비 (기본 768 - 숏폼/릴스에 맞는 세로 비율)
+        height: 이미지 높이 (기본 1344 - 약 9:16 비율)
         num_inference_steps: 추론 단계 수 (높을수록 품질↑, 속도↓)
         guidance_scale: 프롬프트 충실도 (높을수록 프롬프트에 충실)
     
@@ -60,7 +61,7 @@ def generate_image(
     print(f"Generating image via local SDXL ({width}x{height}, {num_inference_steps} steps)...")
 
     # 프롬프트 품질 부스터 추가
-    enhanced_prompt = f"{prompt}, professional marketing poster, high quality, sharp focus, vibrant colors, commercial photography"
+    enhanced_prompt = f"{prompt}, professional marketing poster, high quality, sharp focus, vibrant colors, commercial photography, vertical composition"
 
     result = pipe(
         prompt=enhanced_prompt,

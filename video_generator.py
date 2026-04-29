@@ -2,14 +2,19 @@ import os
 import subprocess
 import requests
 import time
+import textwrap
 
 # FFmpeg 기반 영상 생성 모듈
-# 로컬 SDXL 이미지를 세로 숏폼 영상(1080x1920)으로 변환합니다.
+# 로컬 SDXL 세로 이미지(768x1344)를 숏폼 영상(1080x1920)으로 변환합니다.
 # GPU 없이 CPU만으로 수 초 만에 영상을 생성할 수 있습니다.
 
 # 한국어 폰트 경로 (Noto Sans CJK)
 FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 FALLBACK_FONT_PATH = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
+
+# 자막 설정
+MAX_CHARS_PER_LINE = 16  # 세로 영상(1080px) 기준 한 줄 최대 글자 수
+MAX_OVERLAY_LINES = 4    # 최대 표시 줄 수
 
 
 def _get_font_path() -> str:
@@ -31,37 +36,84 @@ def _get_font_path() -> str:
     return "sans"  # 최후의 폴백
 
 
+def _wrap_text(text: str) -> str:
+    """
+    마케팅 텍스트를 세로 영상 너비에 맞게 줄바꿈 처리합니다.
+    한국어는 글자 폭이 넓으므로 한 줄당 MAX_CHARS_PER_LINE 글자로 제한합니다.
+    """
+    if not text:
+        return ""
+    
+    # IMAGE_PROMPT 부분 제거
+    lines = [l.strip() for l in text.split("\n") 
+             if l.strip() and not l.strip().startswith("[IMAGE_PROMPT]")]
+    
+    # 각 줄을 MAX_CHARS_PER_LINE 글자로 줄바꿈
+    wrapped_lines = []
+    for line in lines:
+        if len(line) <= MAX_CHARS_PER_LINE:
+            wrapped_lines.append(line)
+        else:
+            # textwrap으로 줄바꿈 (한국어도 정상 동작)
+            sub_lines = textwrap.wrap(line, width=MAX_CHARS_PER_LINE)
+            wrapped_lines.extend(sub_lines)
+    
+    # 최대 줄 수 제한
+    wrapped_lines = wrapped_lines[:MAX_OVERLAY_LINES]
+    
+    return wrapped_lines
+
+
+def _escape_ffmpeg_text(text: str) -> str:
+    """FFmpeg drawtext 필터용 특수문자 이스케이프 처리"""
+    # FFmpeg drawtext에서 특수하게 취급되는 문자들을 이스케이프
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'", "'\\''")
+    text = text.replace("%", "%%")
+    text = text.replace(":", "\\:")
+    text = text.replace(";", "\\;")
+    return text
+
+
 def _build_ffmpeg_filter(marketing_text: str, duration: int, fps: int) -> str:
-    """FFmpeg 필터 체인을 구성합니다."""
+    """FFmpeg 필터 체인을 구성합니다. 세로 영상(1080x1920)에 최적화."""
     total_frames = duration * fps
 
-    # Ken Burns 효과: 천천히 1.0x → 1.3x 줌 + 약간의 우상단 패닝
-    zoom_expr = f"min(1+0.3*on/{total_frames},1.3)"
-    x_expr = f"iw/2-(iw/zoom/2)+on/{total_frames}*50"
-    y_expr = f"ih/2-(ih/zoom/2)-on/{total_frames}*30"
+    # Ken Burns 효과: 천천히 1.0x → 1.15x 줌 (세로 영상이라 줌 정도를 약간 줄임)
+    zoom_expr = f"min(1+0.15*on/{total_frames},1.15)"
+    x_expr = f"iw/2-(iw/zoom/2)+on/{total_frames}*20"
+    y_expr = f"ih/2-(ih/zoom/2)-on/{total_frames}*15"
 
+    # 세로 이미지(768x1344)를 1080x1920으로 업스케일
     filter_parts = [
-        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s=1920x1920:fps={fps}",
-        "scale=1080:1080",
+        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s=1080x1890:fps={fps}",
+        "scale=1080:1920:force_original_aspect_ratio=decrease",
         "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black",
         f"fade=t=in:st=0:d=1,fade=t=out:st={duration-1}:d=1",
     ]
 
-    # 텍스트 오버레이 추가 (텍스트가 있을 때만)
-    overlay_text = ""
-    if marketing_text:
-        lines = [l.strip() for l in marketing_text.split("\n") if l.strip() and not l.strip().startswith("[IMAGE_PROMPT]")]
-        overlay_lines = lines[:2] if len(lines) >= 2 else lines
-        overlay_text = "\\n".join(overlay_lines)
-        overlay_text = overlay_text.replace("'", "\\'").replace('"', '\\"').replace("%", "%%").replace(":", "\\:")
-
-    if overlay_text:
+    # 텍스트 오버레이: 줄바꿈 처리된 각 줄을 별도의 drawtext로 추가
+    wrapped_lines = _wrap_text(marketing_text)
+    if wrapped_lines:
         font_path = _get_font_path()
-        filter_parts.append(
-            f"drawtext=fontfile='{font_path}':text='{overlay_text}'"
-            f":fontsize=36:fontcolor=white:borderw=3:bordercolor=black"
-            f":x=(w-text_w)/2:y=h-text_h-120"
-        )
+        font_size = 38
+        line_height = 52  # 줄 간격
+        # 하단에서부터 위로 쌓이도록 y좌표 계산
+        total_text_height = len(wrapped_lines) * line_height
+        base_y = 1920 - total_text_height - 150  # 하단 여백 150px
+
+        for i, line in enumerate(wrapped_lines):
+            escaped_line = _escape_ffmpeg_text(line)
+            y_pos = base_y + (i * line_height)
+            filter_parts.append(
+                f"drawtext=fontfile='{font_path}'"
+                f":text='{escaped_line}'"
+                f":fontsize={font_size}"
+                f":fontcolor=white"
+                f":borderw=3:bordercolor=black@0.8"
+                f":x=(w-text_w)/2"
+                f":y={y_pos}"
+            )
 
     return ",".join(filter_parts)
 
