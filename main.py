@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, Form, UploadFile, File, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
@@ -24,6 +24,14 @@ class ContentResult(BaseModel):
     generatedImageUrl: Optional[str] = None
     generatedVideoUrl: Optional[str] = None
     targetTimeSlot: str
+    createdAtMillis: int
+
+
+class ShortformResult(BaseModel):
+    videoUrl: str
+    imageCount: int
+    marketingText: str
+    durationSeconds: float
     createdAtMillis: int
 
 
@@ -126,6 +134,66 @@ async def generate_content(
         targetTimeSlot=timeSlot,
         createdAtMillis=int(time.time() * 1000)
     )
+
+@app.post("/api/marketing/create-shortform", response_model=ShortformResult)
+async def create_shortform(
+    request: Request,
+    images: List[UploadFile] = File(...),
+    text: str = Form(...),
+    secondsPerImage: float = Form(3.0),
+):
+    """
+    사용자가 업로드한 1~5장의 사진으로 프로페셔널 숏폼 영상을 생성합니다.
+    - images: 1~5개 이미지 파일
+    - text: 마케팅 문구 (영상에 자막으로 표시됨)
+    - secondsPerImage: 이미지당 표시 시간 (기본 3초)
+    """
+    if len(images) < 1 or len(images) > 5:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="이미지는 1~5개까지 업로드할 수 있습니다.")
+
+    # 1. 업로드된 이미지 저장
+    upload_dir = "static/uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    saved_paths = []
+    for i, img in enumerate(images):
+        ext = os.path.splitext(img.filename or "img.png")[1] or ".png"
+        path = os.path.join(upload_dir, f"upload_{int(time.time())}_{i}{ext}")
+        content = await img.read()
+        with open(path, "wb") as f:
+            f.write(content)
+        saved_paths.append(path)
+
+    # 2. 숏폼 영상 생성
+    print(f"Creating shortform video from {len(saved_paths)} images...")
+    td = 0.7 if len(saved_paths) > 1 else 0.0
+    try:
+        filename = await run_in_threadpool(
+            video_generator.create_shortform_video,
+            saved_paths,
+            text,
+            "static/videos",
+            secondsPerImage,
+            td,
+        )
+    finally:
+        # 업로드 임시 파일 정리
+        for p in saved_paths:
+            if os.path.exists(p):
+                os.remove(p)
+
+    n = len(saved_paths)
+    total_dur = round(n * secondsPerImage - max(0, n - 1) * td, 2)
+    base_url = str(request.base_url).rstrip("/")
+
+    return ShortformResult(
+        videoUrl=f"{base_url}/static/videos/{filename}",
+        imageCount=n,
+        marketingText=text,
+        durationSeconds=total_dur,
+        createdAtMillis=int(time.time() * 1000),
+    )
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,193 +1,248 @@
+"""
+프로페셔널 숏폼 영상 생성기 (FFmpeg + PIL)
+Instagram Reels / YouTube Shorts 품질의 광고 영상을 이미지로부터 생성합니다.
+"""
 import os
 import subprocess
-import requests
 import time
 import textwrap
+import shutil
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from typing import List
 
-# FFmpeg 기반 영상 생성 모듈
-# 로컬 SDXL 세로 이미지(768x1344)를 숏폼 영상(1080x1920)으로 변환합니다.
-# GPU 없이 CPU만으로 수 초 만에 영상을 생성할 수 있습니다.
+# === Constants ===
+SHORTS_W, SHORTS_H = 1080, 1920
+FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+FONT_BOLD = os.path.join(FONT_DIR, "Pretendard-ExtraBold.otf")
+FONT_FALLBACK = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
 
-# 한국어 폰트 경로 (Noto Sans CJK)
-FONT_PATH = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-FALLBACK_FONT_PATH = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
+# Ken Burns 프리셋 (이미지마다 다른 움직임)
+KB_PRESETS = [
+    # zoom_expr, x_expr, y_expr  ('{F}'는 총 프레임 수로 치환됨)
+    ("min(1+0.15*on/{F},1.15)", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),                      # 중앙 줌인
+    ("min(1+0.12*on/{F},1.12)", "iw/2-(iw/zoom/2)+on/{F}*60", "ih/2-(ih/zoom/2)"),             # 우측 줌인
+    ("1.12", "(iw-iw/zoom)*(1-on/{F})", "ih/3-(ih/zoom/3)"),                                   # 좌로 패닝
+    ("1.15-0.15*on/{F}", "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"),                              # 줌아웃
+    ("min(1+0.12*on/{F},1.12)", "iw/2-(iw/zoom/2)-on/{F}*60", "ih/2-(ih/zoom/2)+on/{F}*20"),   # 좌측 줌인
+]
 
-# 자막 설정
-MAX_CHARS_PER_LINE = 16  # 세로 영상(1080px) 기준 한 줄 최대 글자 수
-MAX_OVERLAY_LINES = 4    # 최대 표시 줄 수
-
-
-def _get_font_path() -> str:
-    """시스템에서 사용 가능한 한국어 폰트 경로를 반환합니다."""
-    for path in [FONT_PATH, FALLBACK_FONT_PATH]:
-        if os.path.exists(path):
-            return path
-    # fc-list로 한국어 폰트 검색
-    try:
-        result = subprocess.run(
-            ["fc-list", ":lang=ko", "file"], 
-            capture_output=True, text=True, timeout=5
-        )
-        if result.stdout.strip():
-            first_font = result.stdout.strip().split("\n")[0]
-            return first_font.split(":")[0].strip()
-    except Exception:
-        pass
-    return "sans"  # 최후의 폴백
+TRANSITIONS = ["fade", "fadeblack", "slideleft", "slideright", "wiperight", "circlecrop"]
 
 
-def _wrap_text(text: str) -> str:
-    """
-    마케팅 텍스트를 세로 영상 너비에 맞게 줄바꿈 처리합니다.
-    한국어는 글자 폭이 넓으므로 한 줄당 MAX_CHARS_PER_LINE 글자로 제한합니다.
-    """
-    if not text:
-        return ""
-    
-    # IMAGE_PROMPT 부분 제거
-    lines = [l.strip() for l in text.split("\n") 
-             if l.strip() and not l.strip().startswith("[IMAGE_PROMPT]")]
-    
-    # 각 줄을 MAX_CHARS_PER_LINE 글자로 줄바꿈
-    wrapped_lines = []
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    path = FONT_BOLD if os.path.exists(FONT_BOLD) else FONT_FALLBACK
+    return ImageFont.truetype(path, size)
+
+
+def _preprocess_image(img_path: str, out_path: str):
+    """이미지를 1080x1920(9:16)으로 리사이즈+크롭합니다."""
+    img = Image.open(img_path).convert("RGB")
+    # cover crop: 비율 유지하며 꽉 채운 뒤 중앙 크롭
+    target_ratio = SHORTS_W / SHORTS_H
+    img_ratio = img.width / img.height
+    if img_ratio > target_ratio:
+        new_h = img.height
+        new_w = int(new_h * target_ratio)
+    else:
+        new_w = img.width
+        new_h = int(new_w / target_ratio)
+    left = (img.width - new_w) // 2
+    top = (img.height - new_h) // 2
+    img = img.crop((left, top, left + new_w, top + new_h))
+    img = img.resize((SHORTS_W, SHORTS_H), Image.LANCZOS)
+    img.save(out_path, "PNG")
+
+
+def _create_text_overlay(text: str, out_path: str):
+    """PIL로 반투명 그라데이션 배경 + 대형 한글 자막 오버레이 PNG를 생성합니다."""
+    overlay = Image.new("RGBA", (SHORTS_W, SHORTS_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # 하단 그라데이션 배경 (아래로 갈수록 진해짐)
+    grad_h = 500
+    for y in range(grad_h):
+        alpha = int(180 * (y / grad_h))
+        draw.rectangle([(0, SHORTS_H - grad_h + y), (SHORTS_W, SHORTS_H - grad_h + y + 1)],
+                       fill=(0, 0, 0, alpha))
+
+    # 텍스트 줄바꿈 (한 줄 14글자, 최대 4줄)
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    wrapped = []
     for line in lines:
-        if len(line) <= MAX_CHARS_PER_LINE:
-            wrapped_lines.append(line)
-        else:
-            # textwrap으로 줄바꿈 (한국어도 정상 동작)
-            sub_lines = textwrap.wrap(line, width=MAX_CHARS_PER_LINE)
-            wrapped_lines.extend(sub_lines)
+        wrapped.extend(textwrap.wrap(line, width=14))
+    wrapped = wrapped[:4]
+
+    if not wrapped:
+        overlay.save(out_path, "PNG")
+        return
+
+    font_size = 58
+    font = _get_font(font_size)
+    line_h = 78
+    total_h = len(wrapped) * line_h
+    base_y = SHORTS_H - 180 - total_h
+
+    for i, line in enumerate(wrapped):
+        y = base_y + i * line_h
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        x = (SHORTS_W - tw) // 2
+        # 텍스트 그림자 (2px offset)
+        draw.text((x + 2, y + 2), line, fill=(0, 0, 0, 200), font=font)
+        # 메인 텍스트 (흰색)
+        draw.text((x, y), line, fill=(255, 255, 255, 255), font=font)
+
+    overlay.save(out_path, "PNG")
+
+
+def _create_segment(img_path: str, out_path: str, idx: int, duration: float, fps: int = 30):
+    """하나의 이미지에 Ken Burns 효과를 적용한 영상 세그먼트를 생성합니다."""
+    frames = int(duration * fps)
+    preset = KB_PRESETS[idx % len(KB_PRESETS)]
+    z, x, y = [expr.replace("{F}", str(frames)) for expr in preset]
+
+    vf = (f"zoompan=z='{z}':x='{x}':y='{y}':d={frames}"
+          f":s={SHORTS_W}x{SHORTS_H}:fps={fps}")
+
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", str(duration),
+           "-vf", vf, "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+           "-pix_fmt", "yuv420p", out_path]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=True)
+
+
+def _join_segments(segments: List[str], out_path: str, td: float, spi: float):
+    """여러 세그먼트를 xfade 트랜지션으로 이어붙입니다."""
+    if len(segments) == 1:
+        shutil.copy(segments[0], out_path)
+        return
+
+    inputs = []
+    for s in segments:
+        inputs.extend(["-i", s])
+
+    # xfade 체인 구성
+    fc_parts = []
+    prev = "[0]"
+    for i in range(1, len(segments)):
+        trans = TRANSITIONS[i % len(TRANSITIONS)]
+        offset = round((i) * spi - i * td, 2)
+        out_label = f"[v{i}]" if i < len(segments) - 1 else "[vout]"
+        fc_parts.append(f"{prev}[{i}]xfade=transition={trans}:duration={td}:offset={offset}{out_label}")
+        prev = out_label
+
+    fc = ";".join(fc_parts)
+
+    cmd = ["ffmpeg", "-y"] + inputs + [
+        "-filter_complex", fc,
+        "-map", "[vout]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-pix_fmt", "yuv420p", out_path]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
+
+
+def _composite_final(video_path: str, overlay_path: str, out_path: str, total_dur: float):
+    """
+    영상 위에 시네마틱 필터를 입히고 텍스트 오버레이를 합성합니다.
+    - eq/unsharp: 색감 보정 및 선명도 향상
+    - vignette: 하단 가독성을 위한 비네팅 효과
+    """
+    # 필터 체인: 색감 보정(eq) + 선명도(unsharp) + 비네팅(vignette)
+    video_filter = (
+        "eq=brightness=0.02:contrast=1.1:saturation=1.2,"
+        "unsharp=5:5:1.0:5:5:0.0,"
+        "vignette=PI/4"
+    )
     
-    # 최대 줄 수 제한
-    wrapped_lines = wrapped_lines[:MAX_OVERLAY_LINES]
+    # 합성 필터 체인
+    # [0:v]에 영상 필터 적용 -> [v_filtered]
+    # [1:v] 오버레이에 페이드 인 적용 -> [ovr]
+    # [v_filtered] 위에 [ovr] 합성 -> 최종 페이드 인/아웃
+    fc = (
+        f"[0:v]{video_filter}[v_f];"
+        f"[1:v]format=rgba,fade=t=in:st=0.5:d=0.8:alpha=1[ovr];"
+        f"[v_f][ovr]overlay=0:0,"
+        f"fade=t=in:st=0:d=0.5,fade=t=out:st={total_dur - 0.8}:d=0.8"
+    )
+
+    cmd = ["ffmpeg", "-y", "-i", video_path, "-i", overlay_path,
+           "-filter_complex", fc,
+           "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+           "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", str(total_dur),
+           out_path]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
+
+
+# ===== Public API =====
+
+def create_shortform_video(
+    image_paths: List[str],
+    marketing_text: str,
+    output_dir: str = "static/videos",
+    seconds_per_image: float = 3.0,
+    transition_duration: float = 0.7,
+) -> str:
+    """
+    1~5장의 이미지와 마케팅 텍스트로 프로페셔널 숏폼 영상을 생성합니다.
     
-    return wrapped_lines
+    - 각 이미지에 다양한 Ken Burns 효과 (줌인/줌아웃/패닝)
+    - 이미지 전환: fade, slide, wipe, circlecrop 등 광고 스타일 트랜지션
+    - PIL 렌더링 대형 한글 자막 + 그라데이션 배경
+    - 최종 출력: 1080x1920 (9:16) MP4
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    temp = os.path.join(output_dir, f"_tmp_{int(time.time())}")
+    os.makedirs(temp, exist_ok=True)
+
+    spi = seconds_per_image
+    td = transition_duration
+    n = len(image_paths)
+
+    try:
+        # 1. 이미지 전처리 (9:16 크롭)
+        processed = []
+        for i, p in enumerate(image_paths):
+            pp = os.path.join(temp, f"img_{i}.png")
+            _preprocess_image(p, pp)
+            processed.append(pp)
+
+        # 2. Ken Burns 세그먼트 생성
+        segments = []
+        for i, p in enumerate(processed):
+            sp = os.path.join(temp, f"seg_{i}.mp4")
+            _create_segment(p, sp, i, spi)
+            segments.append(sp)
+            print(f"  Segment {i+1}/{n} created.")
+
+        # 3. 트랜지션으로 이어붙이기
+        joined = os.path.join(temp, "joined.mp4")
+        _join_segments(segments, joined, td, spi)
+        print("  Segments joined with transitions.")
+
+        # 4. 텍스트 오버레이 생성
+        overlay_png = os.path.join(temp, "text_overlay.png")
+        _create_text_overlay(marketing_text, overlay_png)
+
+        # 5. 최종 합성
+        total_dur = round(n * spi - max(0, n - 1) * td, 2)
+        filename = f"shortform_{int(time.time())}.mp4"
+        final_path = os.path.join(output_dir, filename)
+        _composite_final(joined, overlay_png, final_path, total_dur)
+
+        print(f"Shortform video saved: {final_path} ({total_dur}s)")
+        return filename
+
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
 
 
-def _escape_ffmpeg_text(text: str) -> str:
-    """FFmpeg drawtext 필터용 특수문자 이스케이프 처리"""
-    # FFmpeg drawtext에서 특수하게 취급되는 문자들을 이스케이프
-    text = text.replace("\\", "\\\\")
-    text = text.replace("'", "'\\''")
-    text = text.replace("%", "%%")
-    text = text.replace(":", "\\:")
-    text = text.replace(";", "\\;")
-    return text
-
-
-def _build_ffmpeg_filter(marketing_text: str, duration: int, fps: int) -> str:
-    """FFmpeg 필터 체인을 구성합니다. 세로 영상(1080x1920)에 최적화."""
-    total_frames = duration * fps
-
-    # Ken Burns 효과: 천천히 1.0x → 1.15x 줌 (세로 영상이라 줌 정도를 약간 줄임)
-    zoom_expr = f"min(1+0.15*on/{total_frames},1.15)"
-    x_expr = f"iw/2-(iw/zoom/2)+on/{total_frames}*20"
-    y_expr = f"ih/2-(ih/zoom/2)-on/{total_frames}*15"
-
-    # 세로 이미지(768x1344)를 1080x1920으로 업스케일
-    filter_parts = [
-        f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':d={total_frames}:s=1080x1890:fps={fps}",
-        "scale=1080:1920:force_original_aspect_ratio=decrease",
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black",
-        f"fade=t=in:st=0:d=1,fade=t=out:st={duration-1}:d=1",
-    ]
-
-    # 텍스트 오버레이: 줄바꿈 처리된 각 줄을 별도의 drawtext로 추가
-    wrapped_lines = _wrap_text(marketing_text)
-    if wrapped_lines:
-        font_path = _get_font_path()
-        font_size = 38
-        line_height = 52  # 줄 간격
-        # 하단에서부터 위로 쌓이도록 y좌표 계산
-        total_text_height = len(wrapped_lines) * line_height
-        base_y = 1920 - total_text_height - 150  # 하단 여백 150px
-
-        for i, line in enumerate(wrapped_lines):
-            escaped_line = _escape_ffmpeg_text(line)
-            y_pos = base_y + (i * line_height)
-            filter_parts.append(
-                f"drawtext=fontfile='{font_path}'"
-                f":text='{escaped_line}'"
-                f":fontsize={font_size}"
-                f":fontcolor=white"
-                f":borderw=3:bordercolor=black@0.8"
-                f":x=(w-text_w)/2"
-                f":y={y_pos}"
-            )
-
-    return ",".join(filter_parts)
-
-
-def _run_ffmpeg(img_path: str, output_dir: str, duration: int, filter_chain: str) -> str:
-    """FFmpeg를 실행하여 영상을 생성합니다."""
-    filename = f"video_{int(time.time())}.mp4"
-    filepath = os.path.join(output_dir, filename)
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", img_path,
-        "-t", str(duration),
-        "-vf", filter_chain,
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
-        filepath
-    ]
-
-    print(f"Generating {duration}s video via FFmpeg (1080x1920 Shorts/Reels)...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-
-    if result.returncode != 0:
-        print(f"FFmpeg error: {result.stderr}")
-        raise RuntimeError(f"FFmpeg failed: {result.stderr[:500]}")
-
-    print(f"Video saved to {filepath}")
-    return filename
-
+# ===== Legacy (단일 이미지 → 영상) =====
 
 def generate_video_from_local(
-    image_path: str,
-    marketing_text: str = "",
-    output_dir: str = "static/videos",
-    duration: int = 10,
+    image_path: str, marketing_text: str = "",
+    output_dir: str = "static/videos", duration: int = 10,
 ) -> str:
-    """
-    로컬 이미지 파일 경로를 받아 FFmpeg로 세로 숏폼 영상(1080x1920)을 생성합니다.
-    (SDXL 로컬 이미지 전용)
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    fps = 30
-    filter_chain = _build_ffmpeg_filter(marketing_text, duration, fps)
-    return _run_ffmpeg(image_path, output_dir, duration, filter_chain)
-
-
-def generate_video_from_url(
-    image_url: str,
-    marketing_text: str = "",
-    output_dir: str = "static/videos",
-    duration: int = 10,
-) -> str:
-    """
-    이미지 URL을 받아 다운로드 후 FFmpeg로 세로 숏폼 영상(1080x1920)을 생성합니다.
-    (외부 이미지 URL용, 레거시 호환)
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    print("Downloading image for video generation...")
-    img_path = os.path.join(output_dir, f"temp_{int(time.time())}.png")
-    response = requests.get(image_url)
-    with open(img_path, "wb") as f:
-        f.write(response.content)
-
-    fps = 30
-    filter_chain = _build_ffmpeg_filter(marketing_text, duration, fps)
-    result = _run_ffmpeg(img_path, output_dir, duration, filter_chain)
-
-    # 임시 이미지 파일 정리
-    if os.path.exists(img_path):
-        os.remove(img_path)
-
-    return result
+    """단일 로컬 이미지를 숏폼 영상으로 변환합니다."""
+    return create_shortform_video(
+        [image_path], marketing_text, output_dir,
+        seconds_per_image=float(duration), transition_duration=0.0
+    )

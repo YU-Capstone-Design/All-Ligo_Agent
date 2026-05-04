@@ -1,0 +1,5 @@
+fonts/
+static/
+__pycache__/
+*.pyc
+my_photos/
