@@ -42,10 +42,18 @@ class WeatherInfo(BaseModel):
     temperature: Optional[float] = None
     visualCue: str
     weatherCode: Optional[int] = None
+    precipitation: Optional[float] = None
+    humidity: Optional[int] = None
+    windSpeed: Optional[float] = None
+    apparentTemperature: Optional[float] = None
+    isDay: Optional[int] = None
 
 
 def fetch_weather_data(lat: float, lon: float) -> dict:
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code"
+    url = (
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m"
+    )
     response = requests.get(url, timeout=5)
     response.raise_for_status()
     data = response.json()
@@ -53,6 +61,11 @@ def fetch_weather_data(lat: float, lon: float) -> dict:
     current = data.get("current", {})
     temp = current.get("temperature_2m")
     weather_code = current.get("weather_code")
+    precipitation = current.get("precipitation")
+    humidity = current.get("relative_humidity_2m")
+    wind_speed = current.get("wind_speed_10m")
+    apparent_temp = current.get("apparent_temperature")
+    is_day = current.get("is_day")
     
     weather_desc = "맑음"
     visual_cue = "sunny, bright, clear sky, vibrant"
@@ -77,7 +90,12 @@ def fetch_weather_data(lat: float, lon: float) -> dict:
         "weatherDesc": weather_desc,
         "temperature": temp,
         "visualCue": visual_cue,
-        "weatherCode": weather_code
+        "weatherCode": weather_code,
+        "precipitation": precipitation,
+        "humidity": humidity,
+        "windSpeed": wind_speed,
+        "apparentTemperature": apparent_temp,
+        "isDay": is_day
     }
 
 
@@ -87,7 +105,19 @@ def get_weather_context(lat: Optional[float], lon: Optional[float]) -> str:
     
     try:
         w = fetch_weather_data(lat, lon)
-        return f"현재 위치의 날씨는 '{w['weatherDesc']}'이며, 기온은 {w['temperature']}도입니다. 이미지 프롬프트 작성 시 시각적 분위기 힌트({w['visualCue']})를 활용하세요."
+        is_day_str = "낮" if w.get("isDay") == 1 else "밤"
+        
+        context = (
+            f"현재 위치의 날씨는 '{w['weatherDesc']}'이며, 기온은 {w['temperature']}도(체감 {w['apparentTemperature']}도)입니다. "
+            f"현재 시간대는 {is_day_str}이며, 습도는 {w['humidity']}%, 풍속은 {w['windSpeed']}m/s입니다. "
+        )
+        
+        if w.get("precipitation", 0) > 0:
+            context += f"현재 강수량은 {w['precipitation']}mm로 비나 눈이 내리고 있습니다. "
+        
+        context += f"이미지 프롬프트 작성 시 시각적 분위기 힌트({w['visualCue']})를 적극 활용하여 현장감 있는 홍보물을 만드세요."
+        
+        return context
     except Exception as e:
         print(f"Weather API error: {e}")
         return "날씨 정보 조회 실패 (기본 설정: 맑음). 밝고 긍정적인 분위기로 작성해주세요."
