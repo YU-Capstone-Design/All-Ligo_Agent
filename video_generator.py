@@ -7,8 +7,10 @@ import subprocess
 import time
 import textwrap
 import shutil
+import random
+import glob
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
-from typing import List
+from typing import List, Optional
 
 # === Constants ===
 SHORTS_W, SHORTS_H = 1080, 1920
@@ -140,7 +142,35 @@ def _join_segments(segments: List[str], out_path: str, td: float, spi: float):
     subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
 
 
-def _composite_final(video_path: str, overlay_path: str, out_path: str, total_dur: float):
+def _create_tts_audio(text: str, out_path: str, voice: str = "ko-KR-SunHiNeural"):
+    """edge-tts를 사용하여 텍스트를 음성으로 변환합니다."""
+    # 문장에서 개행 문자 등을 정리 (너무 길면 끊길 수 있으므로 적절히 처리)
+    clean_text = text.replace("\n", " ").strip()
+    if not clean_text:
+        return
+    print(f"  Generating TTS voiceover: {voice}...")
+    cmd = ["edge-tts", "--voice", voice, "--text", clean_text, "--write-media", out_path]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=True)
+
+
+def _get_random_bgm(bgm_dir: str = "static/bgm") -> Optional[str]:
+    """static/bgm 폴더에서 랜덤한 mp3 파일을 선택합니다."""
+    if not os.path.exists(bgm_dir):
+        return None
+    bgms = glob.glob(os.path.join(bgm_dir, "*.mp3"))
+    if not bgms:
+        return None
+    return random.choice(bgms)
+
+
+def _composite_final(
+    video_path: str, 
+    overlay_path: str, 
+    out_path: str, 
+    total_dur: float,
+    tts_path: Optional[str] = None,
+    bgm_path: Optional[str] = None
+):
     """
     영상 위에 시네마틱 필터를 입히고 텍스트 오버레이를 합성합니다.
     - eq/unsharp: 색감 보정 및 선명도 향상
@@ -157,18 +187,43 @@ def _composite_final(video_path: str, overlay_path: str, out_path: str, total_du
     # [0:v]에 영상 필터 적용 -> [v_filtered]
     # [1:v] 오버레이에 페이드 인 적용 -> [ovr]
     # [v_filtered] 위에 [ovr] 합성 -> 최종 페이드 인/아웃
-    fc = (
+    video_fc = (
         f"[0:v]{video_filter}[v_f];"
         f"[1:v]format=rgba,fade=t=in:st=0.5:d=0.8:alpha=1[ovr];"
         f"[v_f][ovr]overlay=0:0,"
-        f"fade=t=in:st=0:d=0.5,fade=t=out:st={total_dur - 0.8}:d=0.8"
+        f"fade=t=in:st=0:d=0.5,fade=t=out:st={total_dur - 0.8}:d=0.8[vout]"
     )
 
-    cmd = ["ffmpeg", "-y", "-i", video_path, "-i", overlay_path,
+    inputs = ["-i", video_path, "-i", overlay_path]
+    audio_fc = ""
+    
+    # 오디오 믹싱 로직
+    if tts_path and bgm_path:
+        inputs.extend(["-i", tts_path, "-i", bgm_path])
+        audio_fc = "[2:a]volume=1.2[a1];[3:a]volume=0.25[a2];[a1][a2]amix=inputs=2:duration=first[aout]"
+    elif tts_path:
+        inputs.extend(["-i", tts_path])
+        audio_fc = "[2:a]volume=1.2[aout]"
+    elif bgm_path:
+        inputs.extend(["-i", bgm_path])
+        audio_fc = "[2:a]volume=0.3[aout]"
+    
+    fc = video_fc
+    if audio_fc:
+        fc += ";" + audio_fc
+
+    cmd = ["ffmpeg", "-y"] + inputs + [
            "-filter_complex", fc,
+           "-map", "[vout]"]
+    
+    if audio_fc:
+        cmd.extend(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"])
+    
+    cmd.extend([
            "-c:v", "libx264", "-preset", "fast", "-crf", "20",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", str(total_dur),
-           out_path]
+           out_path])
+    
     subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
 
 
@@ -218,15 +273,29 @@ def create_shortform_video(
         _join_segments(segments, joined, td, spi)
         print("  Segments joined with transitions.")
 
-        # 4. 텍스트 오버레이 생성
+        # 4. 텍스트 오버레이 및 TTS 생성
         overlay_png = os.path.join(temp, "text_overlay.png")
         _create_text_overlay(marketing_text, overlay_png)
+        
+        tts_mp3 = os.path.join(temp, "tts_voice.mp3")
+        _create_tts_audio(marketing_text, tts_mp3)
+        
+        # 5. BGM 선택
+        bgm_mp3 = _get_random_bgm()
 
-        # 5. 최종 합성
+        # 6. 최종 합성
         total_dur = round(n * spi - max(0, n - 1) * td, 2)
         filename = f"shortform_{int(time.time())}.mp4"
         final_path = os.path.join(output_dir, filename)
-        _composite_final(joined, overlay_png, final_path, total_dur)
+        
+        _composite_final(
+            joined, 
+            overlay_png, 
+            final_path, 
+            total_dur, 
+            tts_path=tts_mp3 if os.path.exists(tts_mp3) else None,
+            bgm_path=bgm_mp3
+        )
 
         print(f"Shortform video saved: {final_path} ({total_dur}s)")
         return filename
