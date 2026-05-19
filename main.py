@@ -4,6 +4,7 @@ import uuid
 import requests
 import shutil
 import subprocess
+import json
 from typing import Optional, List
 from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status, HTTPException
 from fastapi.responses import HTMLResponse
@@ -336,7 +337,8 @@ async def worker_generate_content(
     time_slot: str,
     tag_list: List[str],
     keyword_list: List[str],
-    weather_data: str
+    weather_data: str,
+    top_performers_context: str = ""
 ):
     global active_jobs_count
     active_jobs_count += 1
@@ -349,18 +351,26 @@ async def worker_generate_content(
         )
         
         # 3. Create Prompt
-        prompt_template = PromptTemplate.from_template("""
+        performers_section = ""
+        if top_performers_context:
+            performers_section = f"""
+[과거 우수 성과 게시물 레퍼런스]
+{top_performers_context}
+
+아래의 [과거 우수 성과 게시물 레퍼런스]는 우리 매장에서 반응이 가장 좋았던 홍보물들입니다. 이 텍스트들의 문체, 감성, 길이를 분석하고 모방하여 이번 타겟 시간대와 날씨에 맞는 새로운 홍보 텍스트를 작성해 주세요.
+"""
+        prompt_text = f"""
 당신은 소상공인을 돕는 전문 마케터입니다. 아래 정보를 바탕으로 매력적인 홍보 텍스트를 작성하고, 
 맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.
 
 [실시간 날씨 컨텍스트]
-{weather_data}
+{{weather_data}}
 
 [마케팅 정보]
-- 타겟 시간대: {time_slot}
-- 태그: {tags}
-- 키워드: {keywords}
-
+- 타겟 시간대: {{time_slot}}
+- 태그: {{tags}}
+- 키워드: {{keywords}}
+{performers_section}
 중요 지시사항:
 1. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황(맑음, 비, 눈 등)을 자연스럽게 반영하여 작성하세요.
 2. [IMAGE_PROMPT] 작성 시, 날씨에 어울리는 시각적 분위기(visual cue)를 프롬프트에 반드시 포함하여 날씨가 반영된 고품질 이미지가 생성되도록 하세요.
@@ -369,7 +379,8 @@ async def worker_generate_content(
 (홍보 텍스트 내용)
 
 [IMAGE_PROMPT]: (English description for image generation)
-        """)
+        """
+        prompt_template = PromptTemplate.from_template(prompt_text)
         
         chain = prompt_template | chat_model | StrOutputParser()
         
@@ -462,7 +473,8 @@ async def generate_content(
     timeSlot: str = Form(...),
     image: Optional[UploadFile] = File(None),
     lat: Optional[float] = Form(None),
-    lon: Optional[float] = Form(None)
+    lon: Optional[float] = Form(None),
+    topPerformers: Optional[str] = Form(None)
 ):
     task_id = str(uuid.uuid4())
     tag_list = [t.strip() for t in tags.split(",")]
@@ -470,6 +482,25 @@ async def generate_content(
     weather_data = get_weather_context(lat, lon)
     base_url = str(request.base_url).rstrip("/")
     
+    top_performers_context = ""
+    if topPerformers:
+        try:
+            performers_list = json.loads(topPerformers)
+            if isinstance(performers_list, list) and performers_list:
+                context_parts = []
+                for i, p in enumerate(performers_list, 1):
+                    click_count = p.get("clickCount", 0)
+                    marketing_text = p.get("marketingText", "")
+                    p_tags = p.get("tags", [])
+                    tag_str = ", ".join(p_tags)
+                    context_parts.append(
+                        f"우수사례 {i} (클릭수: {click_count}) - 내용: {marketing_text} / 태그: {tag_str}"
+                    )
+                top_performers_context = "\n".join(context_parts)
+        except Exception as e:
+            print(f"[{task_id}] Failed to parse topPerformers: {e}")
+            top_performers_context = ""
+            
     background_tasks.add_task(
         worker_generate_content,
         task_id=task_id,
@@ -477,7 +508,8 @@ async def generate_content(
         time_slot=timeSlot,
         tag_list=tag_list,
         keyword_list=keyword_list,
-        weather_data=weather_data
+        weather_data=weather_data,
+        top_performers_context=top_performers_context
     )
     
     return JobAcceptedResponse(taskId=task_id)
