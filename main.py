@@ -2,6 +2,8 @@ import os
 import time
 import uuid
 import requests
+import shutil
+import subprocess
 from typing import Optional, List
 from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status
 from fastapi.responses import HTMLResponse
@@ -20,6 +22,24 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 import image_generator
 import video_generator
+
+# --- 시스템 상태 추적용 전역 변수 ---
+active_jobs_count = 0
+MAX_CONCURRENT_JOBS = 2
+
+class GpuStatus(BaseModel):
+    gpuUtil: int
+    gpuMemUtil: int
+    gpuMemUsedMb: int
+    gpuMemTotalMb: int
+
+class SystemStatusResponse(BaseModel):
+    status: str
+    activeJobs: int
+    maxConcurrentJobs: int
+    diskSpaceFreeMb: float
+    gpu: Optional[GpuStatus] = None
+    timestamp: int
 
 
 class JobAcceptedResponse(BaseModel):
@@ -138,6 +158,56 @@ async def get_weather(lat: float, lon: float):
     except Exception as e:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"날씨 정보를 가져오는데 실패했습니다: {str(e)}")
+
+
+def get_gpu_status() -> Optional[dict]:
+    try:
+        res = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total", "--format=csv,noheader,nounits"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=2
+        )
+        if res.returncode == 0:
+            lines = res.stdout.strip().split("\n")
+            if lines:
+                parts = [p.strip() for p in lines[0].split(",")]
+                if len(parts) >= 4:
+                    return {
+                        "gpuUtil": int(parts[0]),
+                        "gpuMemUtil": int(parts[1]),
+                        "gpuMemUsedMb": int(parts[2]),
+                        "gpuMemTotalMb": int(parts[3])
+                    }
+    except Exception as e:
+        print(f"Failed to get GPU status: {e}")
+    return None
+
+
+@app.get("/api/system/status", response_model=SystemStatusResponse)
+async def get_system_status():
+    global active_jobs_count
+    
+    disk_usage = shutil.disk_usage("static/")
+    free_mb = disk_usage.free / (1024 * 1024)
+    
+    gpu_status = get_gpu_status()
+    gpu_busy = gpu_status is not None and gpu_status["gpuUtil"] >= 90
+    
+    if active_jobs_count >= MAX_CONCURRENT_JOBS or free_mb <= 1000 or gpu_busy:
+        current_status = "busy"
+    else:
+        current_status = "available"
+        
+    return SystemStatusResponse(
+        status=current_status,
+        activeJobs=active_jobs_count,
+        maxConcurrentJobs=MAX_CONCURRENT_JOBS,
+        diskSpaceFreeMb=round(free_mb, 2),
+        gpu=gpu_status,
+        timestamp=int(time.time())
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -267,6 +337,8 @@ async def worker_generate_content(
     keyword_list: List[str],
     weather_data: str
 ):
+    global active_jobs_count
+    active_jobs_count += 1
     try:
         # 2. Setup LangChain with Ollama (qwen2.5:3b)
         chat_model = ChatOllama(
@@ -376,6 +448,8 @@ async def worker_generate_content(
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
             print(f"[{task_id}] Webhook send failed: {we}")
+    finally:
+        active_jobs_count -= 1
 
 
 @app.post("/api/marketing/generate", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -414,6 +488,8 @@ async def worker_create_shortform(
     text: str,
     seconds_per_image: float
 ):
+    global active_jobs_count
+    active_jobs_count += 1
     try:
         print(f"[{task_id}] Creating shortform video from {len(saved_paths)} images...")
         td = 0.7 if len(saved_paths) > 1 else 0.0
@@ -468,6 +544,8 @@ async def worker_create_shortform(
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
             print(f"[{task_id}] Webhook send failed: {we}")
+    finally:
+        active_jobs_count -= 1
 
 
 @app.post("/api/marketing/create-shortform", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
