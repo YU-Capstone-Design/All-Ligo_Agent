@@ -1,8 +1,9 @@
 import os
 import time
+import uuid
 import requests
 from typing import Optional, List
-from fastapi import FastAPI, Form, UploadFile, File, Request
+from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
@@ -19,6 +20,12 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 import image_generator
 import video_generator
+
+
+class JobAcceptedResponse(BaseModel):
+    taskId: str
+    status: str = "PROCESSING"
+    message: str = "Background task started"
 
 
 class ContentResult(BaseModel):
@@ -249,30 +256,27 @@ async def home() -> HTMLResponse:
         )
 
 
-@app.post("/api/marketing/generate", response_model=ContentResult)
-async def generate_content(
-    request: Request,
-    tags: str = Form(...),
-    keywords: str = Form(...),
-    timeSlot: str = Form(...),
-    image: Optional[UploadFile] = File(None),
-    lat: Optional[float] = Form(None),
-    lon: Optional[float] = Form(None)
+# --- WEBHOOK URL Configuration ---
+SPRING_WEBHOOK_URL = os.environ.get("SPRING_WEBHOOK_URL", "http://localhost:8080/api/internal/content-callback")
+
+async def worker_generate_content(
+    task_id: str,
+    base_url: str,
+    time_slot: str,
+    tag_list: List[str],
+    keyword_list: List[str],
+    weather_data: str
 ):
-    # 1. Prepare inputs
-    tag_list = [t.strip() for t in tags.split(",")]
-    keyword_list = [k.strip() for k in keywords.split(",")]
-    weather_data = get_weather_context(lat, lon)
-    
-    # 2. Setup LangChain with Ollama (qwen2.5:3b) - VRAM 절약을 위해 경량 모델 사용
-    chat_model = ChatOllama(
-        model="qwen2.5:3b",
-        temperature=0.7,
-        base_url="http://localhost:11434"
-    )
-    
-    # 3. Create Prompt
-    prompt_template = PromptTemplate.from_template("""
+    try:
+        # 2. Setup LangChain with Ollama (qwen2.5:3b)
+        chat_model = ChatOllama(
+            model="qwen2.5:3b",
+            temperature=0.7,
+            base_url="http://localhost:11434"
+        )
+        
+        # 3. Create Prompt
+        prompt_template = PromptTemplate.from_template("""
 당신은 소상공인을 돕는 전문 마케터입니다. 아래 정보를 바탕으로 매력적인 홍보 텍스트를 작성하고, 
 맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.
 
@@ -292,67 +296,184 @@ async def generate_content(
 (홍보 텍스트 내용)
 
 [IMAGE_PROMPT]: (English description for image generation)
-    """)
-    
-    chain = prompt_template | chat_model | StrOutputParser()
-    
-    # 4. Generate Text using local Ollama
-    print("Generating text via Ollama (qwen2.5:3b)...")
-    result_text = chain.invoke({
-        "weather_data": weather_data,
-        "time_slot": timeSlot,
-        "tags": ", ".join(tag_list),
-        "keywords": ", ".join(keyword_list)
-    })
-    
-    # 5. Extract Image Prompt and Generate Image via Local SDXL
-    generated_image_url = None
-    generated_image_filename = None
-    
-    if "[IMAGE_PROMPT]:" in result_text:
-        parts = result_text.split("[IMAGE_PROMPT]:")
-        image_prompt = parts[1].strip()
+        """)
         
-        print("Generating poster image via local SDXL...")
+        chain = prompt_template | chat_model | StrOutputParser()
+        
+        # 4. Generate Text using local Ollama
+        print(f"[{task_id}] Generating text via Ollama (qwen2.5:3b)...")
+        result_text = chain.invoke({
+            "weather_data": weather_data,
+            "time_slot": time_slot,
+            "tags": ", ".join(tag_list),
+            "keywords": ", ".join(keyword_list)
+        })
+        
+        # 5. Extract Image Prompt and Generate Image via Local SDXL
+        generated_image_url = None
+        generated_image_filename = None
+        
+        if "[IMAGE_PROMPT]:" in result_text:
+            parts = result_text.split("[IMAGE_PROMPT]:")
+            image_prompt = parts[1].strip()
+            
+            print(f"[{task_id}] Generating poster image via local SDXL...")
+            try:
+                generated_image_filename = await run_in_threadpool(
+                    image_generator.generate_image,
+                    image_prompt
+                )
+                generated_image_url = f"{base_url}/static/images/{generated_image_filename}"
+            except Exception as e:
+                print(f"[{task_id}] Image generation failed: {e}")
+                    
+        # 6. Video Generation Pipeline (FFmpeg 기반 - Ken Burns + 텍스트 오버레이)
+        generated_video_url = None
+        if generated_image_filename:
+            print(f"[{task_id}] Starting video generation via FFmpeg...")
+            try:
+                # 로컬 이미지 파일 경로를 직접 전달
+                local_image_path = os.path.join("static/images", generated_image_filename)
+                clean_text = result_text.split("[IMAGE_PROMPT]:")[0].strip() if "[IMAGE_PROMPT]:" in result_text else result_text
+                filename = await run_in_threadpool(
+                    video_generator.generate_video_from_local,
+                    local_image_path,
+                    clean_text
+                )
+                generated_video_url = f"{base_url}/static/videos/{filename}"
+            except Exception as e:
+                print(f"[{task_id}] Video generation failed: {e}")
+        
+        # Success Webhook Payload
+        payload = {
+            "taskId": task_id,
+            "status": "SUCCESS",
+            "jobType": "GENERATE_CONTENT",
+            "data": {
+                "generatedText": result_text,
+                "generatedImageUrl": generated_image_url,
+                "generatedVideoUrl": generated_video_url,
+                "targetTimeSlot": time_slot,
+                "createdAtMillis": int(time.time() * 1000)
+            }
+        }
+        print(f"[{task_id}] Task completed successfully. Sending webhook to {SPRING_WEBHOOK_URL}...")
         try:
-            generated_image_filename = await run_in_threadpool(
-                image_generator.generate_image,
-                image_prompt
-            )
-            base_url = str(request.base_url).rstrip("/")
-            generated_image_url = f"{base_url}/static/images/{generated_image_filename}"
-        except Exception as e:
-            print(f"Image generation failed: {e}")
-                
-    # 6. Video Generation Pipeline (FFmpeg 기반 - Ken Burns + 텍스트 오버레이)
-    generated_video_url = None
-    if generated_image_filename:
-        print("Starting video generation via FFmpeg...")
-        try:
-            # 로컬 이미지 파일 경로를 직접 전달
-            local_image_path = os.path.join("static/images", generated_image_filename)
-            clean_text = result_text.split("[IMAGE_PROMPT]:")[0].strip() if "[IMAGE_PROMPT]:" in result_text else result_text
-            filename = await run_in_threadpool(
-                video_generator.generate_video_from_local,
-                local_image_path,
-                clean_text
-            )
-            base_url = str(request.base_url).rstrip("/")
-            generated_video_url = f"{base_url}/static/videos/{filename}"
-        except Exception as e:
-            print(f"Video generation failed: {e}")
-    
-    return ContentResult(
-        generatedText=result_text,
-        generatedImageUrl=generated_image_url,
-        generatedVideoUrl=generated_video_url,
-        targetTimeSlot=timeSlot,
-        createdAtMillis=int(time.time() * 1000)
-    )
+            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
+        except Exception as we:
+            print(f"[{task_id}] Webhook send failed: {we}")
 
-@app.post("/api/marketing/create-shortform", response_model=ShortformResult)
+    except Exception as e:
+        print(f"[{task_id}] Task failed: {e}")
+        # Error Webhook Payload
+        payload = {
+            "taskId": task_id,
+            "status": "FAILED",
+            "jobType": "GENERATE_CONTENT",
+            "error": str(e)
+        }
+        try:
+            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
+        except Exception as we:
+            print(f"[{task_id}] Webhook send failed: {we}")
+
+
+@app.post("/api/marketing/generate", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
+async def generate_content(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    tags: str = Form(...),
+    keywords: str = Form(...),
+    timeSlot: str = Form(...),
+    image: Optional[UploadFile] = File(None),
+    lat: Optional[float] = Form(None),
+    lon: Optional[float] = Form(None)
+):
+    task_id = str(uuid.uuid4())
+    tag_list = [t.strip() for t in tags.split(",")]
+    keyword_list = [k.strip() for k in keywords.split(",")]
+    weather_data = get_weather_context(lat, lon)
+    base_url = str(request.base_url).rstrip("/")
+    
+    background_tasks.add_task(
+        worker_generate_content,
+        task_id=task_id,
+        base_url=base_url,
+        time_slot=timeSlot,
+        tag_list=tag_list,
+        keyword_list=keyword_list,
+        weather_data=weather_data
+    )
+    
+    return JobAcceptedResponse(taskId=task_id)
+
+async def worker_create_shortform(
+    task_id: str,
+    base_url: str,
+    saved_paths: List[str],
+    text: str,
+    seconds_per_image: float
+):
+    try:
+        print(f"[{task_id}] Creating shortform video from {len(saved_paths)} images...")
+        td = 0.7 if len(saved_paths) > 1 else 0.0
+        try:
+            filename = await run_in_threadpool(
+                video_generator.create_shortform_video,
+                saved_paths,
+                text,
+                "static/videos",
+                seconds_per_image,
+                td,
+            )
+        finally:
+            # 업로드 임시 파일 정리
+            for p in saved_paths:
+                if os.path.exists(p):
+                    os.remove(p)
+
+        n = len(saved_paths)
+        total_dur = round(n * seconds_per_image - max(0, n - 1) * td, 2)
+        generated_video_url = f"{base_url}/static/videos/{filename}"
+        
+        # Success Webhook Payload
+        payload = {
+            "taskId": task_id,
+            "status": "SUCCESS",
+            "jobType": "CREATE_SHORTFORM",
+            "data": {
+                "videoUrl": generated_video_url,
+                "imageCount": n,
+                "marketingText": text,
+                "durationSeconds": total_dur,
+                "createdAtMillis": int(time.time() * 1000)
+            }
+        }
+        print(f"[{task_id}] Task completed successfully. Sending webhook to {SPRING_WEBHOOK_URL}...")
+        try:
+            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
+        except Exception as we:
+            print(f"[{task_id}] Webhook send failed: {we}")
+            
+    except Exception as e:
+        print(f"[{task_id}] Task failed: {e}")
+        # Error Webhook Payload
+        payload = {
+            "taskId": task_id,
+            "status": "FAILED",
+            "jobType": "CREATE_SHORTFORM",
+            "error": str(e)
+        }
+        try:
+            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
+        except Exception as we:
+            print(f"[{task_id}] Webhook send failed: {we}")
+
+
+@app.post("/api/marketing/create-shortform", response_model=JobAcceptedResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_shortform(
     request: Request,
+    background_tasks: BackgroundTasks,
     images: List[UploadFile] = File(...),
     text: str = Form(...),
     secondsPerImage: float = Form(3.0),
@@ -367,47 +488,31 @@ async def create_shortform(
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="이미지는 1~5개까지 업로드할 수 있습니다.")
 
-    # 1. 업로드된 이미지 저장
+    task_id = str(uuid.uuid4())
     upload_dir = "static/uploads"
     os.makedirs(upload_dir, exist_ok=True)
+    
     saved_paths = []
     for i, img in enumerate(images):
         ext = os.path.splitext(img.filename or "img.png")[1] or ".png"
-        path = os.path.join(upload_dir, f"upload_{int(time.time())}_{i}{ext}")
+        path = os.path.join(upload_dir, f"upload_{task_id}_{i}{ext}")
         content = await img.read()
         with open(path, "wb") as f:
             f.write(content)
         saved_paths.append(path)
 
-    # 2. 숏폼 영상 생성
-    print(f"Creating shortform video from {len(saved_paths)} images...")
-    td = 0.7 if len(saved_paths) > 1 else 0.0
-    try:
-        filename = await run_in_threadpool(
-            video_generator.create_shortform_video,
-            saved_paths,
-            text,
-            "static/videos",
-            secondsPerImage,
-            td,
-        )
-    finally:
-        # 업로드 임시 파일 정리
-        for p in saved_paths:
-            if os.path.exists(p):
-                os.remove(p)
-
-    n = len(saved_paths)
-    total_dur = round(n * secondsPerImage - max(0, n - 1) * td, 2)
     base_url = str(request.base_url).rstrip("/")
-
-    return ShortformResult(
-        videoUrl=f"{base_url}/static/videos/{filename}",
-        imageCount=n,
-        marketingText=text,
-        durationSeconds=total_dur,
-        createdAtMillis=int(time.time() * 1000),
+    
+    background_tasks.add_task(
+        worker_create_shortform,
+        task_id=task_id,
+        base_url=base_url,
+        saved_paths=saved_paths,
+        text=text,
+        seconds_per_image=secondsPerImage
     )
+
+    return JobAcceptedResponse(taskId=task_id)
 
 
 if __name__ == "__main__":
