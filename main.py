@@ -5,7 +5,7 @@ import requests
 import shutil
 import subprocess
 from typing import Optional, List
-from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status
+from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.concurrency import run_in_threadpool
@@ -22,6 +22,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 import image_generator
 import video_generator
+import vision_analyzer
 
 # --- 시스템 상태 추적용 전역 변수 ---
 active_jobs_count = 0
@@ -591,6 +592,36 @@ async def create_shortform(
     )
 
     return JobAcceptedResponse(taskId=task_id)
+
+@app.post("/api/vision/analyze")
+async def analyze_image_standalone(
+    image: UploadFile = File(...)
+):
+    """
+    [독립 테스트용 API]
+    업로드된 이미지를 Vision-LLM으로 분석하여 분위기, 색감, 주요 객체 키워드를 반환합니다.
+    """
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="이미지 파일만 업로드 가능합니다.")
+        
+    try:
+        # 파일 읽기
+        image_bytes = await image.read()
+        
+        # 비동기 환경에서 동기 함수를 블로킹 없이 실행
+        analysis_result = await run_in_threadpool(
+            vision_analyzer.analyze_image_for_marketing,
+            image_bytes
+        )
+        
+        return {
+            "success": True,
+            "filename": image.filename,
+            "analysis": analysis_result
+        }
+    except Exception as e:
+        print(f"이미지 분석 중 오류 발생: {e}")
+        raise HTTPException(status_code=500, detail="이미지 분석에 실패했습니다.")
 
 
 if __name__ == "__main__":
