@@ -11,3 +11,6 @@ diffusers
 transformers
 accelerate
 librosa
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
