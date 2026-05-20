@@ -7,3 +7,7 @@ langchain-ollama
 openai
 requests
 edge-tts
+diffusers
+transformers
+accelerate
+librosa

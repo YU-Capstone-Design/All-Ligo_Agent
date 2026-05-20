@@ -783,8 +783,19 @@ async def worker_create_shortform(
                 if os.path.exists(p):
                     os.remove(p)
 
-        n = len(saved_paths)
-        total_dur = round(n * seconds_per_image - max(0, n - 1) * td, 2)
+        # 실제 생성된 비디오 길이를 ffprobe로 정확하게 조회
+        try:
+            video_full_path = os.path.join("static/videos", filename)
+            probe_cmd = [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", video_full_path
+            ]
+            probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+            total_dur = round(float(probe_res.stdout.strip()), 2)
+        except Exception as e:
+            print(f"[{task_id}] Failed to probe video duration: {e}. Using fallback calculation.")
+            total_dur = round(n * seconds_per_image - max(0, n - 1) * td, 2)
+
         generated_video_url = f"{base_url}/static/videos/{filename}"
         
         # Success Webhook Payload
