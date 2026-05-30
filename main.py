@@ -24,7 +24,7 @@ app = FastAPI(
 이 API는 **100% 로컬 AI 모델**을 활용하여 소상공인의 마케팅 콘텐츠(텍스트, 포스터 이미지, 숏폼 영상)를 자동으로 생성합니다.
 
 ### 🏗️ 시스템 아키텍처
-- **텍스트 생성**: Ollama + Qwen2.5:3b (로컬 LLM)
+- **텍스트 생성**: Ollama + Gemma4:latest (로컬 LLM)
 - **이미지 생성**: Stable Diffusion XL (로컬 GPU - RTX 4080)
 - **영상 생성**: FFmpeg 기반 Ken Burns 효과 + 트랜지션
 - **이미지 분석**: LLaVA Vision-LLM (로컬)
@@ -129,7 +129,7 @@ class ContentResult(BaseModel):
     )
     generatedText: str = Field(
         ...,
-        description="AI(Qwen2.5)가 생성한 마케팅 홍보 텍스트. 날씨·분위기태그·해시태그를 반영하며, 맨 끝에 [IMAGE_PROMPT] 포함",
+        description="AI(Gemma4)가 생성한 마케팅 홍보 텍스트. 날씨·분위기태그·해시태그를 반영하며, 맨 끝에 [IMAGE_PROMPT] 포함",
         example="☀️ 화창한 날씨에 딱 맞는 시원한 아이스 아메리카노!\n오늘 하루도 힘내세요 ☕\n\n[IMAGE_PROMPT]: iced americano on sunny cafe terrace..."
     )
     generatedImageUrl: Optional[str] = Field(
@@ -534,9 +534,9 @@ async def worker_generate_content(
     global active_jobs_count
     active_jobs_count += 1
     try:
-        # 2. Setup LangChain with Ollama (qwen2.5:3b)
+        # 2. Setup LangChain with Ollama (gemma4:latest)
         chat_model = ChatOllama(
-            model="qwen2.5:3b",
+            model="gemma4:latest",
             temperature=0.7,
             base_url="http://localhost:11434"
         )
@@ -584,7 +584,7 @@ async def worker_generate_content(
         chain = prompt_template | chat_model | StrOutputParser()
         
         # 4. Generate Text using local Ollama
-        print(f"[{task_id}] Generating text via Ollama (qwen2.5:3b)...")
+        print(f"[{task_id}] Generating text via Ollama (gemma4:latest)...")
         print(f"[{task_id}] Params - moodTag: {mood_tag}, hashTag: {hash_tag}, uploadDay: {upload_day}, uploadTime: {upload_time}, scheduleId: {schedule_id}")
         result_text = chain.invoke({
             "weather_data": weather_data,
@@ -813,7 +813,7 @@ async def upload_generated_video(request: UploadRequest):
 
 ### 🔄 내부 파이프라인
 ```
-1. Qwen2.5:3b (LLM) → 마케팅 텍스트 + 이미지 프롬프트 생성
+1. Gemma4:latest (LLM) → 마케팅 텍스트 + 이미지 프롬프트 생성
 2. SDXL (GPU) → 768×1344 세로 포스터 이미지 생성
 3. FFmpeg → Ken Burns 효과 + 자막 오버레이 숏폼 영상 생성
 4. S3 업로드 → 생성된 영상을 S3에 업로드
