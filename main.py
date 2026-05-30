@@ -122,9 +122,14 @@ class JobAcceptedResponse(BaseModel):
 
 class ContentResult(BaseModel):
     """마케팅 콘텐츠 생성 완료 시 웹훅으로 전송되는 데이터 모델입니다 (참고용 - 직접 반환되지 않음)."""
+    scheduleId: Optional[str] = Field(
+        None,
+        description="Spring Boot에서 전달받은 스케줄 DB 식별자. 요청 시 받은 값을 그대로 반환합니다.",
+        example="42"
+    )
     generatedText: str = Field(
         ...,
-        description="AI(Qwen2.5)가 생성한 마케팅 홍보 텍스트. 날씨·태그·키워드를 반영하며, 맨 끝에 [IMAGE_PROMPT] 포함",
+        description="AI(Qwen2.5)가 생성한 마케팅 홍보 텍스트. 날씨·분위기태그·해시태그를 반영하며, 맨 끝에 [IMAGE_PROMPT] 포함",
         example="☀️ 화창한 날씨에 딱 맞는 시원한 아이스 아메리카노!\n오늘 하루도 힘내세요 ☕\n\n[IMAGE_PROMPT]: iced americano on sunny cafe terrace..."
     )
     generatedImageUrl: Optional[str] = Field(
@@ -137,12 +142,21 @@ class ContentResult(BaseModel):
         description="FFmpeg로 생성된 숏폼 영상(MP4)의 접근 URL. 영상 생성 실패 시 null",
         example="http://localhost:8000/static/videos/shortform_1716134400.mp4"
     )
+    localVideoPath: Optional[str] = Field(
+        None,
+        description="생성된 비디오의 서버 내 로컬 파일 경로. upload 엔드포인트에서 이 경로를 사용합니다.",
+        example="static/videos/shortform_1716134400.mp4"
+    )
     youtubeUrl: Optional[str] = Field(
         None,
         description="유튜브 채널에 업로드된 일부공개(unlisted) 동영상 URL. 업로드 실패 시 null",
         example="https://youtube.com/shorts/abcd1234efg"
     )
-    targetTimeSlot: str = Field(..., description="요청 시 지정한 타겟 시간대", example="morning")
+    uploadSchedule: str = Field(
+        ...,
+        description="요청 시 지정한 업로드 예약 일정 (요일 + 시간)",
+        example="월요일 18:00"
+    )
     createdAtMillis: int = Field(..., description="콘텐츠 생성 완료 시각 (Unix 밀리초 타임스탬프)", example=1716134400000)
 
 
@@ -508,9 +522,12 @@ SPRING_WEBHOOK_URL = os.environ.get("SPRING_WEBHOOK_URL", "http://localhost:8080
 async def worker_generate_content(
     task_id: str,
     base_url: str,
-    time_slot: str,
-    tag_list: List[str],
-    keyword_list: List[str],
+    schedule_id: Optional[str],
+    mood_tag: str,
+    hash_tag: str,
+    user_prompt: str,
+    upload_day: str,
+    upload_time: str,
     weather_data: str,
     top_performers_context: str = ""
 ):
@@ -541,15 +558,19 @@ async def worker_generate_content(
 {{weather_data}}
 
 [마케팅 정보]
-- 타겟 시간대: {{time_slot}}
-- 태그: {{tags}}
-- 키워드: {{keywords}}
+- 분위기 태그: {{mood_tag}}
+- 해시태그: {{hash_tag}}
+- 사용자 추가 요청: {{user_prompt}}
+- 업로드 예정 요일: {{upload_day}}
+- 업로드 예정 시간: {{upload_time}}
 {performers_section}
 중요 지시사항:
 1. 홍보 텍스트는 숏폼 영상 자막용이므로 반드시 띄어쓰기 포함 최대 50자 이내, 3문장 이내로 아주 짧게 작성하세요.
 2. "내용 :", "마케팅 문구 :" 등 어떠한 메타 텍스트나 접두사도 절대 포함하지 마세요. 오직 실제 영상에 들어갈 텍스트만 첫 줄에 작성하세요.
 3. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황을 자연스럽게 반영하여 작성하세요.
-4. 날씨에 어울리는 시각적 분위기(visual cue)를 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요.
+4. 날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({{mood_tag}})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요.
+5. 업로드 예정 시간({{upload_day}} {{upload_time}})에 맞는 타겟 독자 상황을 고려하세요. (예: 월요일 아침이면 출근길, 금요일 저녁이면 퇴근 후 여유 등)
+6. 해시태그({{hash_tag}})의 키워드를 홍보 텍스트에 자연스럽게 녹여 작성하세요.
 
 출력 형식:
 (여기에 순수 홍보 텍스트만 작성)
@@ -564,11 +585,14 @@ async def worker_generate_content(
         
         # 4. Generate Text using local Ollama
         print(f"[{task_id}] Generating text via Ollama (qwen2.5:3b)...")
+        print(f"[{task_id}] Params - moodTag: {mood_tag}, hashTag: {hash_tag}, uploadDay: {upload_day}, uploadTime: {upload_time}, scheduleId: {schedule_id}")
         result_text = chain.invoke({
             "weather_data": weather_data,
-            "time_slot": time_slot,
-            "tags": ", ".join(tag_list),
-            "keywords": ", ".join(keyword_list)
+            "mood_tag": mood_tag,
+            "hash_tag": hash_tag,
+            "user_prompt": user_prompt,
+            "upload_day": upload_day,
+            "upload_time": upload_time
         })
         
         # 5. Extract Image Prompts and Generate Images via Local SDXL
@@ -637,17 +661,20 @@ async def worker_generate_content(
                 print(f"[{task_id}] Video generation failed: {e}")
         
         # Success Webhook Payload
+        upload_schedule = f"{upload_day} {upload_time}"
         payload = {
             "taskId": task_id,
+            "scheduleId": schedule_id,
             "status": "SUCCESS",
             "jobType": "GENERATE_CONTENT",
             "data": {
+                "scheduleId": schedule_id,
                 "generatedText": result_text,
                 "generatedImageUrl": generated_image_urls[0] if generated_image_urls else None,
                 "generatedVideoUrl": generated_video_url,
                 "s3VideoUrl": s3_video_url,
                 "localVideoPath": local_video_path,
-                "targetTimeSlot": time_slot,
+                "uploadSchedule": upload_schedule,
                 "createdAtMillis": int(time.time() * 1000)
             }
         }
@@ -662,6 +689,7 @@ async def worker_generate_content(
         # Error Webhook Payload
         payload = {
             "taskId": task_id,
+            "scheduleId": schedule_id,
             "status": "FAILED",
             "jobType": "GENERATE_CONTENT",
             "error": str(e)
@@ -674,15 +702,24 @@ async def worker_generate_content(
         active_jobs_count -= 1
 
 class UploadRequest(BaseModel):
-    localVideoPath: str = Field(..., description="서버 로컬에 저장된 비디오 경로")
+    """YouTube 업로드 요청 모델. Spring Boot에서 Webhook으로 받은 localVideoPath를 그대로 전달합니다."""
+    scheduleId: Optional[str] = Field(None, description="Spring Boot 스케줄 DB 식별자. 업로드 완료 후 콜백 시 그대로 반환됩니다.")
+    localVideoPath: str = Field(..., description="서버 로컬에 저장된 비디오 경로 (예: static/videos/shortform_xxx.mp4)")
     title: str = Field(..., description="유튜브 영상 제목")
     description: str = Field(..., description="유튜브 영상 설명")
     tags: List[str] = Field(default=[], description="유튜브 영상 태그 리스트")
+    privacyStatus: str = Field(
+        default="unlisted",
+        description="유튜브 영상 공개 상태. 가능한 값: public, unlisted, private",
+        example="unlisted"
+    )
 
 class UploadResponse(BaseModel):
-    status: str
-    youtubeUrl: Optional[str] = None
-    error: Optional[str] = None
+    """YouTube 업로드 결과 응답 모델."""
+    status: str = Field(..., description="업로드 결과 상태: SUCCESS 또는 FAILED")
+    scheduleId: Optional[str] = Field(None, description="요청 시 전달받은 스케줄 ID")
+    youtubeUrl: Optional[str] = Field(None, description="업로드된 YouTube 영상 URL")
+    error: Optional[str] = Field(None, description="실패 시 에러 메시지")
 
 @app.post(
     "/api/marketing/upload",
@@ -690,14 +727,47 @@ class UploadResponse(BaseModel):
     status_code=status.HTTP_200_OK,
     tags=["🖼️ 마케팅 콘텐츠 생성"],
     summary="생성된 임시 영상을 YouTube에 업로드",
-    description="미리보기가 확정된 영상을 YouTube에 업로드하고 로컬 임시 파일을 삭제합니다."
+    description="""
+미리보기가 확정된 영상을 YouTube에 업로드합니다.
+
+### 요청 파라미터
+- `scheduleId`: Spring Boot에서 받은 스케줄 식별자 (선택, 콜백 시 그대로 반환)
+- `localVideoPath`: generate 웹훅에서 받은 로컬 비디오 파일 경로
+- `title`, `description`, `tags`: YouTube 메타데이터
+- `privacyStatus`: 공개 상태 (기본: unlisted)
+
+### 에러 케이스
+- 404: 지정한 로컬 비디오 파일이 서버에 존재하지 않음
+- 400: 비디오 파일이 mp4 형식이 아님
+- 500: YouTube API 업로드 실패
+"""
 )
 async def upload_generated_video(request: UploadRequest):
+    # 파일 존재 여부 검증
     if not os.path.exists(request.localVideoPath):
-        raise HTTPException(status_code=404, detail="해당 로컬 비디오 파일을 찾을 수 없습니다.")
+        raise HTTPException(
+            status_code=404,
+            detail=f"해당 로컬 비디오 파일을 찾을 수 없습니다: {request.localVideoPath}"
+        )
+    
+    # 파일 확장자 검증
+    if not request.localVideoPath.lower().endswith(".mp4"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 비디오 형식입니다. MP4 파일만 업로드 가능합니다. (입력: {request.localVideoPath})"
+        )
+    
+    # 파일 크기 검증 (0바이트 파일 방지)
+    file_size = os.path.getsize(request.localVideoPath)
+    if file_size == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"비디오 파일의 크기가 0입니다. 손상된 파일일 수 있습니다: {request.localVideoPath}"
+        )
         
     try:
         import youtube_uploader
+        print(f"[Upload] Starting YouTube upload: {request.localVideoPath} (size: {file_size} bytes, scheduleId: {request.scheduleId})")
         youtube_url = await run_in_threadpool(
             youtube_uploader.upload_video,
             request.localVideoPath,
@@ -706,16 +776,26 @@ async def upload_generated_video(request: UploadRequest):
             request.tags
         )
         
+        print(f"[Upload] YouTube upload succeeded: {youtube_url}")
+        
         # 업로드 성공 후 로컬 파일 삭제 (옵션)
         # try:
         #     os.remove(request.localVideoPath)
         # except Exception as e:
         #     pass
             
-        return UploadResponse(status="SUCCESS", youtubeUrl=youtube_url)
+        return UploadResponse(
+            status="SUCCESS",
+            scheduleId=request.scheduleId,
+            youtubeUrl=youtube_url
+        )
     except Exception as e:
-        print(f"YouTube Upload API Error: {e}")
-        return UploadResponse(status="FAILED", error=str(e))
+        error_msg = f"YouTube 업로드 실패: {str(e)}"
+        print(f"[Upload] {error_msg}")
+        raise HTTPException(
+            status_code=500,
+            detail=error_msg
+        )
 
 @app.post(
     "/api/marketing/generate",
@@ -724,7 +804,7 @@ async def upload_generated_video(request: UploadRequest):
     tags=["🖼️ 마케팅 콘텐츠 생성"],
     summary="AI 마케팅 콘텐츠 생성 (텍스트 + 포스터 + 영상)",
     description="""
-태그, 키워드, 타겟 시간대를 기반으로 **AI가 마케팅 홍보 텍스트 → 포스터 이미지 → 숏폼 영상**을 순차적으로 생성합니다.
+분위기태그, 해시태그, 사용자 프롬프트, 업로드 예약 일정을 기반으로 **AI가 마케팅 홍보 텍스트 → 포스터 이미지 → 숏폼 영상**을 순차적으로 생성합니다.
 
 ### ⚡ 비동기 처리
 이 API는 **즉시 202 응답**과 `taskId`를 반환합니다. 실제 AI 생성 작업은 백그라운드에서 진행되며, 완료 시 환경 변수 `SPRING_WEBHOOK_URL`에 설정된 URL로 결과를 POST 전송합니다.
@@ -734,6 +814,7 @@ async def upload_generated_video(request: UploadRequest):
 1. Qwen2.5:3b (LLM) → 마케팅 텍스트 + 이미지 프롬프트 생성
 2. SDXL (GPU) → 768×1344 세로 포스터 이미지 생성
 3. FFmpeg → Ken Burns 효과 + 자막 오버레이 숏폼 영상 생성
+4. S3 업로드 → 생성된 영상을 S3에 업로드
 ```
 
 ### 📬 웹훅 콜백 형식
@@ -741,18 +822,21 @@ async def upload_generated_video(request: UploadRequest):
 ```json
 {
   "taskId": "a1b2c3d4-...",
+  "scheduleId": "42",
   "status": "SUCCESS",
   "jobType": "GENERATE_CONTENT",
   "data": {
+    "scheduleId": "42",
     "generatedText": "AI가 생성한 홍보 텍스트...",
     "generatedImageUrl": "http://host/static/images/poster_xxx.png",
     "generatedVideoUrl": "http://host/static/videos/shortform_xxx.mp4",
-    "targetTimeSlot": "morning",
+    "localVideoPath": "static/videos/shortform_xxx.mp4",
+    "uploadSchedule": "월요일 18:00",
     "createdAtMillis": 1716134400000
   }
 }
 ```
-실패 시: `{"taskId": "...", "status": "FAILED", "jobType": "GENERATE_CONTENT", "error": "에러 메시지"}`
+실패 시: `{"taskId": "...", "scheduleId": "42", "status": "FAILED", "jobType": "GENERATE_CONTENT", "error": "에러 메시지"}`
 
 ### ⚠️ 주의사항
 - 작업 시간: GPU 성능에 따라 약 1~5분 소요
@@ -765,20 +849,35 @@ async def upload_generated_video(request: UploadRequest):
 async def generate_content(
     request: Request,
     background_tasks: BackgroundTasks,
-    tags: str = Form(
-        ...,
-        description="마케팅 태그 목록 (쉼표로 구분). 업종·상품 카테고리를 나타냅니다.",
-        example="카페,아메리카노,디저트",
+    scheduleId: Optional[str] = Form(
+        None,
+        description="Spring Boot 스케줄 DB 식별자. 작업 완료 후 Webhook 콜백 시 이 값을 그대로 반환합니다.",
+        example="42",
     ),
-    keywords: str = Form(
+    moodTag: str = Form(
         ...,
-        description="마케팅 키워드 목록 (쉼표로 구분). 강조하고 싶은 핵심 문구입니다.",
-        example="시원한,신메뉴,할인",
+        description="분위기 태그. 콘텐츠의 감성/톤을 결정합니다.",
+        example="밝은, 쾌활한",
     ),
-    timeSlot: str = Form(
+    hashTag: str = Form(
         ...,
-        description="타겟 시간대. LLM이 이 시간대에 맞는 톤으로 텍스트를 생성합니다. 예: morning, lunch, afternoon, evening, night",
-        example="morning",
+        description="해시태그. 마케팅 키워드로 활용됩니다.",
+        example="#카페, #할인",
+    ),
+    prompt: str = Form(
+        "",
+        description="사용자 추가 프롬프트. AI에게 전달할 추가 지시사항이나 강조할 내용을 입력합니다.",
+        example="신메뉴 아이스 라떼를 강조해주세요",
+    ),
+    uploadDay: str = Form(
+        ...,
+        description="업로드 예정 요일. 타겟 독자 상황에 맞는 콘텐츠를 생성하는 데 활용됩니다.",
+        example="월요일",
+    ),
+    uploadTime: str = Form(
+        ...,
+        description="업로드 예정 시간(HH:mm). 시간대에 맞는 톤과 분위기를 반영합니다.",
+        example="18:00",
     ),
     image: Optional[UploadFile] = File(
         None,
@@ -810,8 +909,6 @@ async def generate_content(
     ),
 ):
     task_id = str(uuid.uuid4())
-    tag_list = [t.strip() for t in tags.split(",")]
-    keyword_list = [k.strip() for k in keywords.split(",")]
     weather_data = get_weather_context(lat, lon)
     base_url = str(request.base_url).rstrip("/")
     
@@ -838,9 +935,12 @@ async def generate_content(
         worker_generate_content,
         task_id=task_id,
         base_url=base_url,
-        time_slot=timeSlot,
-        tag_list=tag_list,
-        keyword_list=keyword_list,
+        schedule_id=scheduleId,
+        mood_tag=moodTag,
+        hash_tag=hashTag,
+        user_prompt=prompt,
+        upload_day=uploadDay,
+        upload_time=uploadTime,
         weather_data=weather_data,
         top_performers_context=top_performers_context
     )
