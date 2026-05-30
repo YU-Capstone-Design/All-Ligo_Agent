@@ -193,7 +193,12 @@ def _create_typing_overlay_sequence(
             y = base_y + i * line_h
             bbox = draw.textbbox((0, 0), line, font=font)
             tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
             x = (SHORTS_W - tw) // 2
+            
+            # 반투명 검은색 둥근 모서리 박스 추가
+            bg_bbox = [x - 15, y - 15, x + tw + 15, y + th + 15]
+            draw.rounded_rectangle(bg_bbox, radius=15, fill=(0, 0, 0, 160))
             
             # 그림자 (2px 오프셋)
             draw.text((x + 2, y + 2), line, fill=(0, 0, 0, 200), font=font)
@@ -260,7 +265,7 @@ def _create_tts_audio(text: str, out_path: str, voice: str = "ko-KR-SunHiNeural"
     if not clean_text:
         return
     print(f"  Generating TTS voiceover: {voice}...")
-    cmd = ["edge-tts", "--voice", voice, "--text", clean_text, "--write-media", out_path]
+    cmd = ["edge-tts", "--voice", voice, "--rate=+10%", "--text", clean_text, "--write-media", out_path]
     subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=True)
 
 
@@ -319,19 +324,20 @@ def _composite_final(
     audio_inputs_start_idx = 2 if overlay_path else 1
     
     # 오디오 믹싱 로직
+    fade_st = max(0.0, total_dur - 1.5)
     if tts_path and bgm_path:
         inputs.extend(["-i", tts_path, "-i", bgm_path])
         idx_tts = audio_inputs_start_idx
         idx_bgm = audio_inputs_start_idx + 1
-        audio_fc = f"[{idx_tts}:a]volume=1.2[a1];[{idx_bgm}:a]volume=0.25[a2];[a1][a2]amix=inputs=2:duration=longest[aout]"
+        audio_fc = f"[{idx_tts}:a]volume=1.2[a1];[{idx_bgm}:a]volume=0.25[a2];[a1][a2]amix=inputs=2:duration=longest,afade=t=out:st={fade_st}:d=1.5[aout]"
     elif tts_path:
         inputs.extend(["-i", tts_path])
         idx_tts = audio_inputs_start_idx
-        audio_fc = f"[{idx_tts}:a]volume=1.2[aout]"
+        audio_fc = f"[{idx_tts}:a]volume=1.2,afade=t=out:st={fade_st}:d=1.5[aout]"
     elif bgm_path:
         inputs.extend(["-i", bgm_path])
         idx_bgm = audio_inputs_start_idx
-        audio_fc = f"[{idx_bgm}:a]volume=0.3[aout]"
+        audio_fc = f"[{idx_bgm}:a]volume=0.3,afade=t=out:st={fade_st}:d=1.5[aout]"
     
     fc = video_fc
     if audio_fc:
