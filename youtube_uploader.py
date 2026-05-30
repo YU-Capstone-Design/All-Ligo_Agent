@@ -34,20 +34,15 @@ def get_authenticated_service():
                 print(f"[YouTube Uploader] Token refresh failed: {e}. Re-authenticating...")
                 creds = None
         
-        # If refreshing failed or wasn't possible, run full flow
+        # If refreshing failed or wasn't possible, we need manual re-authentication
         if not creds:
-            if not os.path.exists('client_secret.json'):
-                raise FileNotFoundError(
-                    "[YouTube Uploader] 'client_secret.json' file is missing. "
-                    "Please place the client secrets JSON in the All-Ligo_Agent root directory."
-                )
+            raise Exception(
+                "[YouTube Uploader] Authentication token is missing, expired, or invalid. "
+                "Please run 'python refresh_youtube_token.py' in your terminal to re-authenticate."
+            )
             
-            print("[YouTube Uploader] Performing first-time authentication...")
-            flow = InstalledAppFlow.from_client_secrets_file('client_secret.json', SCOPES)
-            # Run local server to authenticate. It will block until authorization is complete.
-            creds = flow.run_local_server(port=8989)
-            
-        # Save credentials for the next run
+        # Save credentials for the next run (only if we got new ones, which won't happen here anymore, 
+        # but kept for consistency if we add other flows)
         with open('token.json', 'w') as token_file:
             token_file.write(creds.to_json())
             print("[YouTube Uploader] Token successfully saved/updated in 'token.json'")

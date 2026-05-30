@@ -14,3 +14,5 @@ librosa
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
+boto3
+python-dotenv

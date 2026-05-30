@@ -6,3 +6,4 @@ my_photos/
 server.log
 client_secret.json
 token.json
+.env
