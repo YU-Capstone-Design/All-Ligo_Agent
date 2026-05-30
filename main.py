@@ -545,13 +545,17 @@ async def worker_generate_content(
 - 키워드: {{keywords}}
 {performers_section}
 중요 지시사항:
-1. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황(맑음, 비, 눈 등)을 자연스럽게 반영하여 작성하세요.
-2. [IMAGE_PROMPT] 작성 시, 날씨에 어울리는 시각적 분위기(visual cue)를 프롬프트에 반드시 포함하여 날씨가 반영된 고품질 이미지가 생성되도록 하세요.
+1. 홍보 텍스트는 숏폼 영상 자막용이므로 반드시 띄어쓰기 포함 최대 50자 이내, 3문장 이내로 아주 짧게 작성하세요.
+2. "홍보 텍스트 내용:", "마케팅 문구:" 같은 불필요한 접두사나 설명은 절대 포함하지 말고, 오직 실제 영상에 들어갈 문구만 작성하세요.
+3. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황을 자연스럽게 반영하여 작성하세요.
+4. 날씨에 어울리는 시각적 분위기(visual cue)를 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요.
 
 출력 형식:
-(홍보 텍스트 내용)
+(여기에 순수 홍보 텍스트만 작성)
 
-[IMAGE_PROMPT]: (English description for image generation)
+[IMAGE_PROMPT_1]: (English description for image 1)
+[IMAGE_PROMPT_2]: (English description for image 2)
+[IMAGE_PROMPT_3]: (English description for image 3)
         """
         prompt_template = PromptTemplate.from_template(prompt_text)
         
@@ -566,36 +570,46 @@ async def worker_generate_content(
             "keywords": ", ".join(keyword_list)
         })
         
-        # 5. Extract Image Prompt and Generate Image via Local SDXL
-        generated_image_url = None
-        generated_image_filename = None
+        # 5. Extract Image Prompts and Generate Images via Local SDXL
+        generated_image_urls = []
+        generated_image_filenames = []
         
-        if "[IMAGE_PROMPT]:" in result_text:
-            parts = result_text.split("[IMAGE_PROMPT]:")
-            image_prompt = parts[1].strip()
-            
-            print(f"[{task_id}] Generating poster image via local SDXL...")
+        import re
+        image_prompts = re.findall(r'\[IMAGE_PROMPT(?:_\d+)?\]:\s*(.*)', result_text)
+        
+        if image_prompts:
+            print(f"[{task_id}] Generating {len(image_prompts[:3])} poster images via local SDXL...")
             try:
-                generated_image_filename = await run_in_threadpool(
-                    image_generator.generate_image,
-                    image_prompt
-                )
-                generated_image_url = f"{base_url}/static/images/{generated_image_filename}"
+                for prompt in image_prompts[:3]:
+                    filename = await run_in_threadpool(
+                        image_generator.generate_image,
+                        prompt.strip()
+                    )
+                    if filename:
+                        generated_image_filenames.append(filename)
+                        generated_image_urls.append(f"{base_url}/static/images/{filename}")
             except Exception as e:
                 print(f"[{task_id}] Image generation failed: {e}")
                     
         # 6. Video Generation Pipeline (FFmpeg 기반 - Ken Burns + 텍스트 오버레이)
         generated_video_url = None
         youtube_url = None
-        if generated_image_filename:
-            print(f"[{task_id}] Starting video generation via FFmpeg...")
+        
+        if generated_image_filenames:
+            print(f"[{task_id}] Starting video generation via FFmpeg with {len(generated_image_filenames)} images...")
             try:
-                # 로컬 이미지 파일 경로를 직접 전달
-                local_image_path = os.path.join("static/images", generated_image_filename)
-                clean_text = result_text.split("[IMAGE_PROMPT]:")[0].strip() if "[IMAGE_PROMPT]:" in result_text else result_text
+                # 로컬 이미지 파일 경로들을 리스트로 전달
+                local_image_paths = [os.path.join("static/images", fn) for fn in generated_image_filenames]
+                
+                # 텍스트 정리 (프롬프트 부분 제거)
+                clean_text = re.sub(r'\[IMAGE_PROMPT.*', '', result_text, flags=re.DOTALL).strip()
+                # 정규식을 통한 불필요한 접두사(메타 텍스트) 정밀 파싱
+                clean_text = re.sub(r'^(?:홍보\s*텍스트|마케팅\s*문구|홍보\s*문구|텍스트\s*내용|자막|출력\s*형식)[\s\:\-]*', '', clean_text, flags=re.IGNORECASE).strip()
+                clean_text = clean_text.strip('\'" \n')
+                
                 filename = await run_in_threadpool(
-                    video_generator.generate_video_from_local,
-                    local_image_path,
+                    video_generator.create_shortform_video,
+                    local_image_paths,
                     clean_text
                 )
                 generated_video_url = f"{base_url}/static/videos/{filename}"
@@ -635,7 +649,7 @@ async def worker_generate_content(
             "jobType": "GENERATE_CONTENT",
             "data": {
                 "generatedText": result_text,
-                "generatedImageUrl": generated_image_url,
+                "generatedImageUrl": generated_image_urls[0] if generated_image_urls else None,
                 "generatedVideoUrl": generated_video_url,
                 "youtubeUrl": youtube_url,
                 "targetTimeSlot": time_slot,

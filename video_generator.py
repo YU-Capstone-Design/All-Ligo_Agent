@@ -127,25 +127,37 @@ def _create_typing_overlay_sequence(
     frames_dir = os.path.join(temp_dir, "typing_frames")
     os.makedirs(frames_dir, exist_ok=True)
     
-    # 텍스트 줄바꿈 처리 (기존 코드 로직 유지)
+    # 텍스트 줄바꿈 처리 로직 개선
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     wrapped = []
+    # 텍스트 길이에 따라 자동 줄바꿈 너비를 유동적으로 조절
+    wrap_width = 14 if len(text) <= 40 else 18
     for line in lines:
-        wrapped.extend(textwrap.wrap(line, width=14))
-    wrapped = wrapped[:4]
+        wrapped.extend(textwrap.wrap(line, width=wrap_width))
+        
+    # 강제로 잘라내는 로직 제거, 모든 텍스트가 표시되도록 함
     
     # 전체 줄을 뉴라인으로 합친 버전
     full_wrapped_text = "\n".join(wrapped)
     total_chars = len(full_wrapped_text)
     
-    font_size = 58
-    font = _get_font(font_size)
-    line_h = 78
-    
-    # 텍스트 수직 위치 고정 (타이핑 시 텍스트가 수직으로 흔들리지 않도록 방지)
+    # 줄 수에 따라 폰트 크기 및 줄 간격을 유동적으로 조정
     total_lines_count = len(wrapped)
+    if total_lines_count > 6:
+        font_size = 42
+        line_h = 60
+    elif total_lines_count > 4:
+        font_size = 48
+        line_h = 68
+    else:
+        font_size = 58
+        line_h = 78
+        
+    font = _get_font(font_size)
+    
+    # 텍스트 수직 위치 계산 (텍스트가 길어지면 위로 올라가되, 최소 여백을 보장)
     total_h = total_lines_count * line_h
-    base_y = SHORTS_H - 180 - total_h
+    base_y = max(100, SHORTS_H - 180 - total_h)
     
     print(f"Generating subtitle typing animation: {total_frames} frames ({chars_per_second} chars/sec)...")
     
@@ -255,7 +267,7 @@ def _create_tts_audio(text: str, out_path: str, voice: str = "ko-KR-SunHiNeural"
 def _get_random_bgm(bgm_dir: Optional[str] = None) -> Optional[str]:
     """static/bgm 폴더에서 랜덤한 mp3 파일을 선택합니다."""
     if bgm_dir is None:
-        bgm_dir = os.path.join(os.path.dirname(__file__), "static", "bgm")
+        bgm_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "static", "bgm"))
         
     if not os.path.exists(bgm_dir):
         return None
@@ -311,7 +323,7 @@ def _composite_final(
         inputs.extend(["-i", tts_path, "-i", bgm_path])
         idx_tts = audio_inputs_start_idx
         idx_bgm = audio_inputs_start_idx + 1
-        audio_fc = f"[{idx_tts}:a]volume=1.2[a1];[{idx_bgm}:a]volume=0.25[a2];[a1][a2]amix=inputs=2:duration=first[aout]"
+        audio_fc = f"[{idx_tts}:a]volume=1.2[a1];[{idx_bgm}:a]volume=0.25[a2];[a1][a2]amix=inputs=2:duration=longest[aout]"
     elif tts_path:
         inputs.extend(["-i", tts_path])
         idx_tts = audio_inputs_start_idx
