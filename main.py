@@ -679,6 +679,7 @@ async def worker_generate_content(
             }
         }
         print(f"[{task_id}] Task completed successfully. Sending webhook to {SPRING_WEBHOOK_URL}...")
+        print(f"[{task_id}] ▶ Webhook Payload (GENERATE_CONTENT / SUCCESS):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
         try:
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
@@ -694,6 +695,7 @@ async def worker_generate_content(
             "jobType": "GENERATE_CONTENT",
             "error": str(e)
         }
+        print(f"[{task_id}] ▶ Webhook Payload (GENERATE_CONTENT / FAILED):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
         try:
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
@@ -1032,6 +1034,7 @@ async def worker_create_shortform(
             }
         }
         print(f"[{task_id}] Task completed successfully. Sending webhook to {SPRING_WEBHOOK_URL}...")
+        print(f"[{task_id}] ▶ Webhook Payload (CREATE_SHORTFORM / SUCCESS):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
         try:
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
@@ -1046,6 +1049,7 @@ async def worker_create_shortform(
             "jobType": "CREATE_SHORTFORM",
             "error": str(e)
         }
+        print(f"[{task_id}] ▶ Webhook Payload (CREATE_SHORTFORM / FAILED):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
         try:
             requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
         except Exception as we:
