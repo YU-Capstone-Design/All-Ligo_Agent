@@ -520,25 +520,24 @@ async def worker_generate_content(
         generated_image_filenames = []
         generated_image_urls = []
         
-        if content_type == "POST" or (content_type == "VIDEO" and resolved_mode == "TRANSFORM"):
-            if saved_image_paths:
-                first_image_path = saved_image_paths[0]
-                print(f"[{task_id}] Analyzing first uploaded image via LLaVA...")
-                with open(first_image_path, "rb") as f:
-                    image_bytes = f.read()
-                analysis_result = await run_in_threadpool(
-                    vision_analyzer.analyze_image_for_marketing,
-                    image_bytes
-                )
-                vision_keywords = f"\n[업로드 이미지 분석 결과]\n- 주요 객체: {', '.join(analysis_result.get('objects', []))}\n- 분위기: {', '.join(analysis_result.get('mood', []))}\n- 주요 색상: {', '.join(analysis_result.get('colors', []))}\n이 분석 결과를 바탕으로 새로운 마케팅 텍스트를 작성하세요."
-                if content_type == "POST":
-                    import shutil
-                    ext = os.path.splitext(first_image_path)[1] or ".png"
-                    filename = f"poster_{task_id}_0{ext}"
-                    dest_path = os.path.join("static/images", filename)
-                    shutil.copy(first_image_path, dest_path)
-                    generated_image_filenames.append(filename)
-                    generated_image_urls.append(f"{base_url}/static/images/{filename}")
+        if saved_image_paths:
+            first_image_path = saved_image_paths[0]
+            print(f"[{task_id}] Analyzing first uploaded image via LLaVA...")
+            with open(first_image_path, "rb") as f:
+                image_bytes = f.read()
+            analysis_result = await run_in_threadpool(
+                vision_analyzer.analyze_image_for_marketing,
+                image_bytes
+            )
+            vision_keywords = f"\n[업로드 이미지 분석 결과]\n- 주요 객체: {', '.join(analysis_result.get('objects', []))}\n- 분위기: {', '.join(analysis_result.get('mood', []))}\n- 주요 색상: {', '.join(analysis_result.get('colors', []))}\n이 분석 결과를 바탕으로 새로운 마케팅 텍스트를 작성하세요."
+            if content_type == "POST":
+                import shutil
+                ext = os.path.splitext(first_image_path)[1] or ".png"
+                filename = f"poster_{task_id}_0{ext}"
+                dest_path = os.path.join("static/images", filename)
+                shutil.copy(first_image_path, dest_path)
+                generated_image_filenames.append(filename)
+                generated_image_urls.append(f"{base_url}/static/images/{filename}")
 
         if content_type == "VIDEO" and resolved_mode == "ORIGINAL":
             if saved_image_paths:
