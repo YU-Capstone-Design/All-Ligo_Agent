@@ -849,95 +849,37 @@ async def upload_generated_video(request: UploadRequest):
 ```
 """,
 )
+class GenerateRequestDto(BaseModel):
+    moodTag: Optional[str] = None
+    hashTag: Optional[str] = None
+    prompt: Optional[str] = None
+    uploadDay: Optional[str] = None
+    uploadTime: Optional[str] = None
+    scheduleId: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    contentType: Optional[str] = None
+    mode: Optional[str] = None
+    imageUrls: List[str] = []
+    topPerformers: Optional[str] = None
+
 async def generate_content(
     request: Request,
+    req: GenerateRequestDto,
     background_tasks: BackgroundTasks,
-    contentType: str = Form(
-        ...,
-        description="POST(블로그/인스타용 글+이미지) 또는 VIDEO(숏폼 영상)",
-        example="POST",
-    ),
-    mode: str = Form(
-        ...,
-        description="TRANSFORM(업로드 이미지 분석 후 AI 변형 생성) 또는 ORIGINAL(업로드 이미지 원본 유지)",
-        example="TRANSFORM",
-    ),
-    scheduleId: Optional[str] = Form(
-        None,
-        description="Spring Boot 스케줄 DB 식별자.",
-        example="42",
-    ),
-    moodTag: str = Form(
-        ...,
-        description="분위기 태그. 콘텐츠의 감성/톤을 결정합니다.",
-        example="밝은, 쾌활한",
-    ),
-    hashTag: str = Form(
-        ...,
-        description="해시태그. 마케팅 키워드로 활용됩니다.",
-        example="#카페, #할인",
-    ),
-    prompt: str = Form(
-        "",
-        description="사용자 추가 프롬프트.",
-        example="신메뉴 아이스 라떼를 강조해주세요",
-    ),
-    uploadDay: str = Form(
-        ...,
-        description="업로드 예정 요일.",
-        example="월요일",
-    ),
-    uploadTime: str = Form(
-        ...,
-        description="업로드 예정 시간(HH:mm).",
-        example="18:00",
-    ),
-    images: List[UploadFile] = File(
-        default=[],
-        description="참고용 다중 이미지 파일. mode가 TRANSFORM이면 첫 번째 이미지가 분석용으로, ORIGINAL이면 모든 이미지가 원본으로 사용됩니다.",
-    ),
-    imageUrls: str = Form(
-        default="",
-        description="참고용 다중 이미지 URL 리스트 (콤마로 구분). Spring Boot에서 전달 시 사용됩니다.",
-    ),
-    lat: Optional[float] = Form(
-        None,
-        description="(선택) 매장 위치의 위도.",
-        example=35.8714,
-    ),
-    lon: Optional[float] = Form(
-        None,
-        description="(선택) 매장 위치의 경도.",
-        example=128.6014,
-    ),
-    topPerformers: Optional[str] = Form(
-        None,
-        description="(선택) 과거 우수 성과 게시물 데이터 (JSON 문자열).",
-    ),
 ):
     task_id = str(uuid.uuid4())
-    weather_data = get_weather_context(lat, lon)
+    weather_data = get_weather_context(req.lat, req.lon)
     base_url = str(request.base_url).rstrip("/")
     
     saved_image_paths = []
     upload_dir = "static/uploads"
     os.makedirs(upload_dir, exist_ok=True)
     
-    parsed_urls = [url.strip() for url in imageUrls.split(",") if url.strip()]
-    
-    valid_images = [img for img in images if img and img.filename]
-    total_images_count = len(valid_images) + len(parsed_urls)
-    if not (1 <= total_images_count <= 5):
-        raise HTTPException(status_code=400, detail="이미지는 파일 또는 URL로 총 1장에서 5장 사이로 첨부해주세요.")
+    parsed_urls = [url.strip() for url in req.imageUrls if url.strip()]
+    if not (1 <= len(parsed_urls) <= 5):
+        raise HTTPException(status_code=400, detail="이미지 URL은 1장에서 5장 사이로 제공해주세요.")
         
-    for idx, img in enumerate(valid_images):
-        ext = os.path.splitext(img.filename)[1] or ".png"
-        saved_path = os.path.join(upload_dir, f"upload_{task_id}_file_{idx}{ext}")
-        content_bytes = await img.read()
-        with open(saved_path, "wb") as f:
-            f.write(content_bytes)
-        saved_image_paths.append(saved_path)
-
     if parsed_urls:
         async def download_image(url: str, idx: int):
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -970,9 +912,9 @@ async def generate_content(
         saved_image_paths.extend(downloaded_paths)
 
     top_performers_context = ""
-    if topPerformers:
+    if req.topPerformers:
         try:
-            performers_list = json.loads(topPerformers)
+            performers_list = json.loads(req.topPerformers)
             if isinstance(performers_list, list) and performers_list:
                 context_parts = []
                 for i, p in enumerate(performers_list, 1):
@@ -992,15 +934,15 @@ async def generate_content(
         worker_generate_content,
         task_id=task_id,
         base_url=base_url,
-        content_type=contentType,
-        mode=mode,
+        content_type=req.contentType,
+        mode=req.mode,
         saved_image_paths=saved_image_paths,
-        schedule_id=scheduleId,
-        mood_tag=moodTag,
-        hash_tag=hashTag,
-        user_prompt=prompt,
-        upload_day=uploadDay,
-        upload_time=uploadTime,
+        schedule_id=req.scheduleId,
+        mood_tag=req.moodTag,
+        hash_tag=req.hashTag,
+        user_prompt=req.prompt,
+        upload_day=req.uploadDay,
+        upload_time=req.uploadTime,
         weather_data=weather_data,
         top_performers_context=top_performers_context
     )
