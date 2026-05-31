@@ -5,7 +5,7 @@ import requests
 import shutil
 import subprocess
 import json
-from typing import Optional, List
+from typing import Optional, List, Union
 from fastapi import FastAPI, Form, UploadFile, File, Request, BackgroundTasks, status, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -508,12 +508,19 @@ async def worker_generate_content(
     global active_jobs_count
     active_jobs_count += 1
     try:
+        resolved_mode = mode
+        if mode.upper() == "AUTO":
+            if saved_image_paths:
+                resolved_mode = "ORIGINAL"
+            else:
+                resolved_mode = "TRANSFORM"
+
         # Step 1: Image Processing (mode 분기)
         vision_keywords = ""
         generated_image_filenames = []
         generated_image_urls = []
         
-        if content_type == "POST" or (content_type == "VIDEO" and mode == "TRANSFORM"):
+        if content_type == "POST" or (content_type == "VIDEO" and resolved_mode == "TRANSFORM"):
             if saved_image_paths:
                 first_image_path = saved_image_paths[0]
                 print(f"[{task_id}] Analyzing first uploaded image via LLaVA...")
@@ -533,7 +540,7 @@ async def worker_generate_content(
                     generated_image_filenames.append(filename)
                     generated_image_urls.append(f"{base_url}/static/images/{filename}")
 
-        if content_type == "VIDEO" and mode == "ORIGINAL":
+        if content_type == "VIDEO" and resolved_mode == "ORIGINAL":
             if saved_image_paths:
                 print(f"[{task_id}] Mode is ORIGINAL. Skipping AI image generation. Using {len(saved_image_paths)} images.")
                 import shutil
@@ -564,7 +571,7 @@ async def worker_generate_content(
             content_type_instruction = "숏폼 영상의 자막 및 설명란 용도이므로, 띄어쓰기 포함 50자 이내, 짧고 강렬한 1~2문장으로 작성하세요."
 
         image_prompt_instruction = ""
-        if mode == "TRANSFORM" and content_type == "VIDEO":
+        if resolved_mode == "TRANSFORM" and content_type == "VIDEO":
             image_prompt_instruction = "맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.\n\n날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({mood_tag})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요."
         else:
             image_prompt_instruction = "이미지 생성은 하지 않으므로 [IMAGE_PROMPT]는 절대 작성하지 마세요."
@@ -591,7 +598,7 @@ async def worker_generate_content(
 출력 형식:
 (여기에 순수 홍보 텍스트만 작성)
 """
-        if mode == "TRANSFORM" and content_type == "VIDEO":
+        if resolved_mode == "TRANSFORM" and content_type == "VIDEO":
             prompt_text += """
 [IMAGE_PROMPT_1]: (English description for image 1)
 [IMAGE_PROMPT_2]: (English description for image 2)
@@ -612,7 +619,7 @@ async def worker_generate_content(
         })
         
         import re
-        if mode == "TRANSFORM" and content_type == "VIDEO":
+        if resolved_mode == "TRANSFORM" and content_type == "VIDEO":
             image_prompts = re.findall(r'\[IMAGE_PROMPT(?:_\d+)?\]:\s*(.*)', result_text)
             if image_prompts:
                 print(f"[{task_id}] Generating {len(image_prompts[:3])} poster images via local SDXL...")
@@ -815,6 +822,28 @@ async def upload_generated_video(request: UploadRequest):
             detail=error_msg
         )
 
+class GenerateRequestDto(BaseModel):
+    moodTag: Optional[str] = None
+    mood_tag: Optional[str] = None
+    hashTag: Optional[str] = None
+    hash_tag: Optional[str] = None
+    prompt: Optional[str] = None
+    uploadDay: Optional[str] = None
+    upload_day: Optional[str] = None
+    uploadTime: Optional[str] = None
+    upload_time: Optional[str] = None
+    scheduleId: Optional[Union[str, int]] = None
+    schedule_id: Optional[Union[str, int]] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    contentType: Optional[str] = None
+    content_type: Optional[str] = None
+    mode: Optional[str] = None
+    imageUrls: Optional[List[str]] = None
+    image_urls: Optional[List[str]] = None
+    topPerformers: Optional[str] = None
+    top_performers: Optional[str] = None
+
 @app.post(
     "/api/marketing/generate",
     response_model=JobAcceptedResponse,
@@ -849,36 +878,27 @@ async def upload_generated_video(request: UploadRequest):
 ```
 """,
 )
-class GenerateRequestDto(BaseModel):
-    moodTag: Optional[str] = None
-    hashTag: Optional[str] = None
-    prompt: Optional[str] = None
-    uploadDay: Optional[str] = None
-    uploadTime: Optional[str] = None
-    scheduleId: Optional[str] = None
-    lat: Optional[float] = None
-    lon: Optional[float] = None
-    contentType: Optional[str] = None
-    mode: Optional[str] = None
-    imageUrls: List[str] = []
-    topPerformers: Optional[str] = None
-
 async def generate_content(
     request: Request,
     req: GenerateRequestDto,
     background_tasks: BackgroundTasks,
 ):
     task_id = str(uuid.uuid4())
-    weather_data = get_weather_context(req.lat, req.lon)
+    actual_lat = req.lat
+    actual_lon = req.lon
+    actual_image_urls = req.imageUrls if req.imageUrls is not None else (req.image_urls or [])
+    actual_top_performers = req.topPerformers or req.top_performers
+
+    weather_data = get_weather_context(actual_lat, actual_lon)
     base_url = str(request.base_url).rstrip("/")
     
     saved_image_paths = []
     upload_dir = "static/uploads"
     os.makedirs(upload_dir, exist_ok=True)
     
-    parsed_urls = [url.strip() for url in req.imageUrls if url.strip()]
-    if not (1 <= len(parsed_urls) <= 5):
-        raise HTTPException(status_code=400, detail="이미지 URL은 1장에서 5장 사이로 제공해주세요.")
+    parsed_urls = [url.strip() for url in actual_image_urls if url.strip()]
+    if parsed_urls and len(parsed_urls) > 5:
+        raise HTTPException(status_code=400, detail="이미지 URL은 최대 5장까지 제공해주세요.")
         
     if parsed_urls:
         async def download_image(url: str, idx: int):
@@ -912,9 +932,9 @@ async def generate_content(
         saved_image_paths.extend(downloaded_paths)
 
     top_performers_context = ""
-    if req.topPerformers:
+    if actual_top_performers:
         try:
-            performers_list = json.loads(req.topPerformers)
+            performers_list = json.loads(actual_top_performers)
             if isinstance(performers_list, list) and performers_list:
                 context_parts = []
                 for i, p in enumerate(performers_list, 1):
@@ -930,19 +950,30 @@ async def generate_content(
             print(f"[{task_id}] Failed to parse topPerformers: {e}")
             top_performers_context = ""
             
+    raw_schedule_id = req.scheduleId if req.scheduleId is not None else req.schedule_id
+    schedule_id_str = str(raw_schedule_id) if raw_schedule_id is not None else None
+    
+    actual_content_type = req.contentType or req.content_type or "POST"
+    actual_mode = req.mode or "ORIGINAL"
+    actual_mood_tag = req.moodTag or req.mood_tag or "밝은"
+    actual_hash_tag = req.hashTag or req.hash_tag or "#마케팅"
+    actual_prompt = req.prompt or ""
+    actual_upload_day = req.uploadDay or req.upload_day or "월요일"
+    actual_upload_time = req.uploadTime or req.upload_time or "18:00"
+
     background_tasks.add_task(
         worker_generate_content,
         task_id=task_id,
         base_url=base_url,
-        content_type=req.contentType,
-        mode=req.mode,
+        content_type=actual_content_type,
+        mode=actual_mode,
         saved_image_paths=saved_image_paths,
-        schedule_id=req.scheduleId,
-        mood_tag=req.moodTag,
-        hash_tag=req.hashTag,
-        user_prompt=req.prompt,
-        upload_day=req.uploadDay,
-        upload_time=req.uploadTime,
+        schedule_id=schedule_id_str,
+        mood_tag=actual_mood_tag,
+        hash_tag=actual_hash_tag,
+        user_prompt=actual_prompt,
+        upload_day=actual_upload_day,
+        upload_time=actual_upload_time,
         weather_data=weather_data,
         top_performers_context=top_performers_context
     )

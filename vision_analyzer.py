@@ -1,8 +1,6 @@
 import base64
+import requests
 from typing import List
-from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage
-
 from io import BytesIO
 from PIL import Image
 
@@ -33,15 +31,8 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
     # 1. 이미지 인코딩 및 최적화
     base64_image = encode_image_to_base64(image_bytes)
     
-    # 2. Vision 모델 설정
-    # keep_alive=0은 매번 모델을 메모리에서 내렸다가 다시 올리게 만들어 극심한 병목과 무한 딜레이(hang)를 유발하므로 제거/수정
-    chat_model = ChatOllama(
-        model="llava", 
-        temperature=0.2, 
-        base_url="http://localhost:11434"
-    )
-    
-    # 3. 프롬프트 구성 (객체, 분위기, 색감을 콤마로 구분된 해시태그 형태로 요구)
+    # 2. Ollama API 직접 호출 (LangChain 의존성 제거로 안정성/성능 극대화)
+    url = "http://localhost:11434/api/chat"
     prompt_text = (
         "You are an expert marketing analyst. Look at this image and extract key elements for an Instagram advertisement. "
         "Provide your analysis exactly in this format:\n"
@@ -50,19 +41,39 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
         "Colors: [dominant colors separated by comma]"
     )
     
-    message = HumanMessage(
-        content=[
-            {"type": "text", "text": prompt_text},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-        ]
-    )
+    payload = {
+        "model": "llava:latest",
+        "messages": [
+            {
+                "role": "user",
+                "content": prompt_text,
+                "images": [base64_image]
+            }
+        ],
+        "options": {
+            "temperature": 0.2,
+            "num_ctx": 4096  # 불필요하게 큰 컨텍스트(32768 등) 방지하여 VRAM 점유 및 hang 해결
+        },
+        "stream": False
+    }
     
-    # 4. 모델 호출
+    # 3. 모델 호출
     print("Vision-LLM(LLaVA)을 통해 이미지 분석 중...")
-    response = chat_model.invoke([message])
-    result_text = response.content
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        res_json = response.json()
+        result_text = res_json.get("message", {}).get("content", "")
+    except Exception as e:
+        print(f"Ollama API 호출 중 오류 발생: {e}")
+        return {
+            "objects": [],
+            "mood": [],
+            "colors": [],
+            "error": str(e)
+        }
     
-    # 5. 결과 파싱 (텍스트를 딕셔너리 형태로 정제)
+    # 4. 결과 파싱 (텍스트를 딕셔너리 형태로 정제)
     analysis_result = {
         "objects": [],
         "mood": [],
@@ -80,7 +91,6 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
                 analysis_result["colors"] = [x.strip() for x in line.replace("Colors:", "").split(",")]
     except Exception as e:
         print(f"결과 파싱 오류: {e}")
-        # 파싱에 실패하더라도 원본 텍스트를 저장하여 디버깅에 활용
         analysis_result["raw_text"] = result_text
 
     return analysis_result
