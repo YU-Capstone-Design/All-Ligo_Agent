@@ -3,23 +3,42 @@ from typing import List
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage
 
+from io import BytesIO
+from PIL import Image
+
 def encode_image_to_base64(image_bytes: bytes) -> str:
-    """이미지 바이트 데이터를 Base64 문자열로 변환합니다."""
-    return base64.b64encode(image_bytes).decode('utf-8')
+    """이미지 바이트 데이터를 Base64 문자열로 변환합니다. LLaVA 처리 속도 향상을 위해 해상도를 리사이징합니다."""
+    try:
+        # 이미지를 열고 최대 해상도를 제한 (예: 800x800)
+        img = Image.open(BytesIO(image_bytes))
+        img.thumbnail((800, 800))
+        
+        # RGB 모드로 변환 (알파 채널 제거)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+            
+        # 압축하여 바이트로 변환
+        buffer = BytesIO()
+        img.save(buffer, format="JPEG", quality=85)
+        optimized_bytes = buffer.getvalue()
+        return base64.b64encode(optimized_bytes).decode('utf-8')
+    except Exception as e:
+        print(f"이미지 리사이징 오류 (원본 데이터 사용): {e}")
+        return base64.b64encode(image_bytes).decode('utf-8')
 
 def analyze_image_for_marketing(image_bytes: bytes) -> dict:
     """
     Vision-LLM(LLaVA)을 사용하여 이미지를 분석하고 마케팅 키워드를 추출합니다.
     """
-    # 1. 이미지 인코딩
+    # 1. 이미지 인코딩 및 최적화
     base64_image = encode_image_to_base64(image_bytes)
     
-    # 2. Vision 모델 설정 (온도값을 낮춰 일관된 단어 추출 유도)
+    # 2. Vision 모델 설정
+    # keep_alive=0은 매번 모델을 메모리에서 내렸다가 다시 올리게 만들어 극심한 병목과 무한 딜레이(hang)를 유발하므로 제거/수정
     chat_model = ChatOllama(
         model="llava", 
         temperature=0.2, 
-        base_url="http://localhost:11434",
-        keep_alive=0
+        base_url="http://localhost:11434"
     )
     
     # 3. 프롬프트 구성 (객체, 분위기, 색감을 콤마로 구분된 해시태그 형태로 요구)

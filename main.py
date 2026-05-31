@@ -15,7 +15,8 @@ from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
 from langchain_core.output_parsers import StrOutputParser
 import s3_uploader
-
+import httpx
+import asyncio
 app = FastAPI(
     title="📢 All-Ligo 마케팅 AI 에이전트 API",
     description="""
@@ -892,8 +893,12 @@ async def generate_content(
         example="18:00",
     ),
     images: List[UploadFile] = File(
-        ...,
-        description="참고용 다중 이미지 파일 (1장~5장 필수). mode가 TRANSFORM이면 첫 번째 이미지가 분석용으로, ORIGINAL이면 모든 이미지가 원본으로 사용됩니다.",
+        default=[],
+        description="참고용 다중 이미지 파일. mode가 TRANSFORM이면 첫 번째 이미지가 분석용으로, ORIGINAL이면 모든 이미지가 원본으로 사용됩니다.",
+    ),
+    imageUrls: str = Form(
+        default="",
+        description="참고용 다중 이미지 URL 리스트 (콤마로 구분). Spring Boot에서 전달 시 사용됩니다.",
     ),
     lat: Optional[float] = Form(
         None,
@@ -915,20 +920,54 @@ async def generate_content(
     base_url = str(request.base_url).rstrip("/")
     
     saved_image_paths = []
-    if not (1 <= len(images) <= 5):
-        raise HTTPException(status_code=400, detail="이미지는 1장에서 5장 사이로 첨부해주세요.")
-        
     upload_dir = "static/uploads"
     os.makedirs(upload_dir, exist_ok=True)
     
-    for idx, img in enumerate(images):
-        if img and img.filename:
-            ext = os.path.splitext(img.filename)[1] or ".png"
-            saved_path = os.path.join(upload_dir, f"upload_{task_id}_{idx}{ext}")
-            content_bytes = await img.read()
-            with open(saved_path, "wb") as f:
-                f.write(content_bytes)
-            saved_image_paths.append(saved_path)
+    parsed_urls = [url.strip() for url in imageUrls.split(",") if url.strip()]
+    
+    valid_images = [img for img in images if img and img.filename]
+    total_images_count = len(valid_images) + len(parsed_urls)
+    if not (1 <= total_images_count <= 5):
+        raise HTTPException(status_code=400, detail="이미지는 파일 또는 URL로 총 1장에서 5장 사이로 첨부해주세요.")
+        
+    for idx, img in enumerate(valid_images):
+        ext = os.path.splitext(img.filename)[1] or ".png"
+        saved_path = os.path.join(upload_dir, f"upload_{task_id}_file_{idx}{ext}")
+        content_bytes = await img.read()
+        with open(saved_path, "wb") as f:
+            f.write(content_bytes)
+        saved_image_paths.append(saved_path)
+
+    if parsed_urls:
+        async def download_image(url: str, idx: int):
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    
+                    ext = ".png"
+                    content_type = response.headers.get("content-type", "")
+                    if "jpeg" in content_type or "jpg" in content_type:
+                        ext = ".jpg"
+                    elif "webp" in content_type:
+                        ext = ".webp"
+                    elif "gif" in content_type:
+                        ext = ".gif"
+                        
+                    saved_path = os.path.join(upload_dir, f"upload_{task_id}_url_{idx}{ext}")
+                    with open(saved_path, "wb") as f:
+                        f.write(response.content)
+                    return saved_path
+                except httpx.HTTPStatusError as e:
+                    print(f"[{task_id}] URL 다운로드 HTTP 에러: {url}, Error: {e}")
+                    raise HTTPException(status_code=400, detail=f"이미지 다운로드 실패: {url}")
+                except Exception as e:
+                    print(f"[{task_id}] URL 다운로드 실패: {url}, Error: {e}")
+                    raise HTTPException(status_code=400, detail=f"이미지 다운로드 실패: {url}")
+
+        download_tasks = [download_image(url, idx) for idx, url in enumerate(parsed_urls)]
+        downloaded_paths = await asyncio.gather(*download_tasks)
+        saved_image_paths.extend(downloaded_paths)
 
     top_performers_context = ""
     if topPerformers:
