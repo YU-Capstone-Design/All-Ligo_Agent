@@ -494,7 +494,7 @@ async def worker_generate_content(
     base_url: str,
     content_type: str,
     mode: str,
-    saved_image_path: Optional[str],
+    saved_image_paths: List[str],
     schedule_id: Optional[str],
     mood_tag: str,
     hash_tag: str,
@@ -512,26 +512,37 @@ async def worker_generate_content(
         generated_image_filenames = []
         generated_image_urls = []
         
-        if mode == "TRANSFORM":
-            if saved_image_path:
-                print(f"[{task_id}] Analyzing uploaded image via LLaVA...")
-                with open(saved_image_path, "rb") as f:
+        if content_type == "POST" or (content_type == "VIDEO" and mode == "TRANSFORM"):
+            if saved_image_paths:
+                first_image_path = saved_image_paths[0]
+                print(f"[{task_id}] Analyzing first uploaded image via LLaVA...")
+                with open(first_image_path, "rb") as f:
                     image_bytes = f.read()
                 analysis_result = await run_in_threadpool(
                     vision_analyzer.analyze_image_for_marketing,
                     image_bytes
                 )
-                vision_keywords = f"\n[업로드 이미지 분석 결과]\n- 주요 객체: {', '.join(analysis_result.get('objects', []))}\n- 분위기: {', '.join(analysis_result.get('mood', []))}\n- 주요 색상: {', '.join(analysis_result.get('colors', []))}\n이 분석 결과를 바탕으로 새로운 마케팅 텍스트와 이미지 프롬프트를 작성하세요."
-        elif mode == "ORIGINAL":
-            if saved_image_path:
-                print(f"[{task_id}] Mode is ORIGINAL. Skipping AI image generation.")
+                vision_keywords = f"\n[업로드 이미지 분석 결과]\n- 주요 객체: {', '.join(analysis_result.get('objects', []))}\n- 분위기: {', '.join(analysis_result.get('mood', []))}\n- 주요 색상: {', '.join(analysis_result.get('colors', []))}\n이 분석 결과를 바탕으로 새로운 마케팅 텍스트를 작성하세요."
+                if content_type == "POST":
+                    import shutil
+                    ext = os.path.splitext(first_image_path)[1] or ".png"
+                    filename = f"poster_{task_id}_0{ext}"
+                    dest_path = os.path.join("static/images", filename)
+                    shutil.copy(first_image_path, dest_path)
+                    generated_image_filenames.append(filename)
+                    generated_image_urls.append(f"{base_url}/static/images/{filename}")
+
+        if content_type == "VIDEO" and mode == "ORIGINAL":
+            if saved_image_paths:
+                print(f"[{task_id}] Mode is ORIGINAL. Skipping AI image generation. Using {len(saved_image_paths)} images.")
                 import shutil
-                ext = os.path.splitext(saved_image_path)[1] or ".png"
-                filename = f"poster_{task_id}{ext}"
-                dest_path = os.path.join("static/images", filename)
-                shutil.copy(saved_image_path, dest_path)
-                generated_image_filenames.append(filename)
-                generated_image_urls.append(f"{base_url}/static/images/{filename}")
+                for i, path in enumerate(saved_image_paths):
+                    ext = os.path.splitext(path)[1] or ".png"
+                    filename = f"poster_{task_id}_{i}{ext}"
+                    dest_path = os.path.join("static/images", filename)
+                    shutil.copy(path, dest_path)
+                    generated_image_filenames.append(filename)
+                    generated_image_urls.append(f"{base_url}/static/images/{filename}")
 
         # Step 2: Text Generation (contentType 분기)
         chat_model = ChatOllama(
@@ -551,7 +562,7 @@ async def worker_generate_content(
             content_type_instruction = "숏폼 영상의 자막 및 설명란 용도이므로, 띄어쓰기 포함 50자 이내, 짧고 강렬한 1~2문장으로 작성하세요."
 
         image_prompt_instruction = ""
-        if mode == "TRANSFORM":
+        if mode == "TRANSFORM" and content_type == "VIDEO":
             image_prompt_instruction = "맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.\n\n날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({mood_tag})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요."
         else:
             image_prompt_instruction = "이미지 생성은 하지 않으므로 [IMAGE_PROMPT]는 절대 작성하지 마세요."
@@ -578,7 +589,7 @@ async def worker_generate_content(
 출력 형식:
 (여기에 순수 홍보 텍스트만 작성)
 """
-        if mode == "TRANSFORM":
+        if mode == "TRANSFORM" and content_type == "VIDEO":
             prompt_text += """
 [IMAGE_PROMPT_1]: (English description for image 1)
 [IMAGE_PROMPT_2]: (English description for image 2)
@@ -599,7 +610,7 @@ async def worker_generate_content(
         })
         
         import re
-        if mode == "TRANSFORM":
+        if mode == "TRANSFORM" and content_type == "VIDEO":
             image_prompts = re.findall(r'\[IMAGE_PROMPT(?:_\d+)?\]:\s*(.*)', result_text)
             if image_prompts:
                 print(f"[{task_id}] Generating {len(image_prompts[:3])} poster images via local SDXL...")
@@ -698,11 +709,12 @@ async def worker_generate_content(
             print(f"[{task_id}] Webhook send failed: {we}")
     finally:
         active_jobs_count -= 1
-        if saved_image_path and os.path.exists(saved_image_path):
-            try:
-                os.remove(saved_image_path)
-            except Exception:
-                pass
+        for p in saved_image_paths:
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
 
 class UploadRequest(BaseModel):
@@ -878,9 +890,9 @@ async def generate_content(
         description="업로드 예정 시간(HH:mm).",
         example="18:00",
     ),
-    image: Optional[UploadFile] = File(
-        None,
-        description="(선택) 참고용 이미지 파일. mode가 TRANSFORM이면 분석용, ORIGINAL이면 원본으로 사용됩니다.",
+    images: List[UploadFile] = File(
+        ...,
+        description="참고용 다중 이미지 파일 (1장~5장 필수). mode가 TRANSFORM이면 첫 번째 이미지가 분석용으로, ORIGINAL이면 모든 이미지가 원본으로 사용됩니다.",
     ),
     lat: Optional[float] = Form(
         None,
@@ -901,15 +913,21 @@ async def generate_content(
     weather_data = get_weather_context(lat, lon)
     base_url = str(request.base_url).rstrip("/")
     
-    saved_image_path = None
-    if image and image.filename:
-        upload_dir = "static/uploads"
-        os.makedirs(upload_dir, exist_ok=True)
-        ext = os.path.splitext(image.filename)[1] or ".png"
-        saved_image_path = os.path.join(upload_dir, f"upload_{task_id}{ext}")
-        content_bytes = await image.read()
-        with open(saved_image_path, "wb") as f:
-            f.write(content_bytes)
+    saved_image_paths = []
+    if not (1 <= len(images) <= 5):
+        raise HTTPException(status_code=400, detail="이미지는 1장에서 5장 사이로 첨부해주세요.")
+        
+    upload_dir = "static/uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    for idx, img in enumerate(images):
+        if img and img.filename:
+            ext = os.path.splitext(img.filename)[1] or ".png"
+            saved_path = os.path.join(upload_dir, f"upload_{task_id}_{idx}{ext}")
+            content_bytes = await img.read()
+            with open(saved_path, "wb") as f:
+                f.write(content_bytes)
+            saved_image_paths.append(saved_path)
 
     top_performers_context = ""
     if topPerformers:
@@ -936,7 +954,7 @@ async def generate_content(
         base_url=base_url,
         content_type=contentType,
         mode=mode,
-        saved_image_path=saved_image_path,
+        saved_image_paths=saved_image_paths,
         schedule_id=scheduleId,
         mood_tag=moodTag,
         hash_tag=hashTag,
