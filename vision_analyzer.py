@@ -60,7 +60,7 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
     # 3. 모델 호출
     print("Vision-LLM(LLaVA)을 통해 이미지 분석 중...")
     try:
-        response = requests.post(url, json=payload, timeout=60)
+        response = requests.post(url, json=payload, timeout=15)  # 데모/운영 환경 안전을 위해 15초 타임아웃 적용
         response.raise_for_status()
         res_json = response.json()
         result_text = res_json.get("message", {}).get("content", "")
