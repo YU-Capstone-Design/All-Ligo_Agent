@@ -61,11 +61,21 @@ def upload_video(file_path: str, title: str, description: str, tags: list = None
     # Build authenticated YouTube service
     youtube = get_authenticated_service()
 
+    # 방어적 데이터 처리: tags가 None이거나 누락된 경우 빈 리스트로 초기화
+    safe_tags = tags if tags is not None else []
+
+    # 유튜브 업로더 모듈 연동 검증: 한글 키워드/문자열 직렬화 로깅
+    import json
+    print(f"[YouTube Uploader] --- METADATA VALIDATION ---")
+    print(f"[YouTube Uploader] Raw Tags Received: {safe_tags}")
+    print(f"[YouTube Uploader] Serialized Tags (JSON): {json.dumps(safe_tags, ensure_ascii=False)}")
+    print(f"[YouTube Uploader] -----------------------------")
+
     body = {
         'snippet': {
             'title': title[:100],  # Title is capped at 100 characters on YouTube
             'description': description,
-            'tags': tags or [],
+            'tags': safe_tags,
             'categoryId': '22'  # 'People & Blogs' category
         },
         'status': {
