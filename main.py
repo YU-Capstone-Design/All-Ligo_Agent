@@ -122,56 +122,26 @@ class JobAcceptedResponse(BaseModel):
 
 class ContentResult(BaseModel):
     """마케팅 콘텐츠 생성 완료 시 웹훅으로 전송되는 데이터 모델입니다 (참고용 - 직접 반환되지 않음)."""
-    scheduleId: Optional[str] = Field(
-        None,
-        description="Spring Boot에서 전달받은 스케줄 DB 식별자. 요청 시 받은 값을 그대로 반환합니다.",
-        example="42"
-    )
+    contentType: str = Field(..., description="POST 또는 VIDEO")
+    mode: str = Field(..., description="TRANSFORM 또는 ORIGINAL")
     generatedText: str = Field(
         ...,
-        description="AI(Gemma4)가 생성한 마케팅 홍보 텍스트. 날씨·분위기태그·해시태그를 반영하며, 맨 끝에 [IMAGE_PROMPT] 포함",
-        example="☀️ 화창한 날씨에 딱 맞는 시원한 아이스 아메리카노!\n오늘 하루도 힘내세요 ☕\n\n[IMAGE_PROMPT]: iced americano on sunny cafe terrace..."
+        description="Gemma4가 생성한 마케팅 텍스트 (블로그 글 또는 영상 자막)"
     )
-    generatedImageUrl: Optional[str] = Field(
+    posterUrl: Optional[str] = Field(
         None,
-        description="SDXL로 생성된 포스터 이미지의 접근 URL. 이미지 생성 실패 시 null",
-        example="http://localhost:8000/static/images/poster_1716134400.png"
+        description="AI이미지 또는 원본이미지의 접근 URL. 실패 시 null"
     )
-    generatedVideoUrl: Optional[str] = Field(
+    s3VideoUrl: Optional[str] = Field(
         None,
-        description="FFmpeg로 생성된 숏폼 영상(MP4)의 접근 URL. 영상 생성 실패 시 null",
-        example="http://localhost:8000/static/videos/shortform_1716134400.mp4"
+        description="비디오 생성 시에만 존재, 없으면 null"
     )
     localVideoPath: Optional[str] = Field(
         None,
-        description="생성된 비디오의 서버 내 로컬 파일 경로. upload 엔드포인트에서 이 경로를 사용합니다.",
-        example="static/videos/shortform_1716134400.mp4"
+        description="생성된 비디오의 서버 내 로컬 파일 경로. 없으면 null"
     )
-    youtubeUrl: Optional[str] = Field(
-        None,
-        description="유튜브 채널에 업로드된 일부공개(unlisted) 동영상 URL. 업로드 실패 시 null",
-        example="https://youtube.com/shorts/abcd1234efg"
-    )
-    uploadSchedule: str = Field(
-        ...,
-        description="요청 시 지정한 업로드 예약 일정 (요일 + 시간)",
-        example="월요일 18:00"
-    )
-    createdAtMillis: int = Field(..., description="콘텐츠 생성 완료 시각 (Unix 밀리초 타임스탬프)", example=1716134400000)
-
-
-class ShortformResult(BaseModel):
-    """숏폼 영상 생성 완료 시 웹훅으로 전송되는 데이터 모델입니다 (참고용 - 직접 반환되지 않음)."""
-    videoUrl: str = Field(..., description="생성된 숏폼 영상(MP4) 접근 URL", example="http://localhost:8000/static/videos/shortform_1716134400.mp4")
-    youtubeUrl: Optional[str] = Field(
-        None,
-        description="유튜브 채널에 업로드된 일부공개(unlisted) 동영상 URL. 업로드 실패 시 null",
-        example="https://youtube.com/shorts/abcd1234efg"
-    )
-    imageCount: int = Field(..., description="영상에 사용된 이미지 개수", example=3)
-    marketingText: str = Field(..., description="영상에 자막으로 표시된 마케팅 문구", example="맛있는 커피 한 잔의 여유")
-    durationSeconds: float = Field(..., description="생성된 영상의 총 재생 시간 (초)", example=7.6)
-    createdAtMillis: int = Field(..., description="영상 생성 완료 시각 (Unix 밀리초 타임스탬프)", example=1716134400000)
+    uploadSchedule: str = Field(..., description="요청 시 지정한 업로드 예약 일정 (요일 + 시간)")
+    createdAtMillis: int = Field(..., description="콘텐츠 생성 완료 시각 (Unix 밀리초 타임스탬프)")
 
 
 class WeatherInfo(BaseModel):
@@ -377,7 +347,7 @@ async def get_system_status():
     free_mb = disk_usage.free / (1024 * 1024)
     
     gpu_status = get_gpu_status()
-    gpu_busy = gpu_status is not None and gpu_status["gpuUtil"] >= 90
+    gpu_busy = gpu_status is not None and (gpu_status["gpuUtil"] >= 90 or gpu_status["gpuMemUtil"] >= 80)
     
     if active_jobs_count >= MAX_CONCURRENT_JOBS or free_mb <= 1000 or gpu_busy:
         current_status = "busy"
@@ -522,6 +492,9 @@ SPRING_WEBHOOK_URL = os.environ.get("SPRING_WEBHOOK_URL", "http://localhost:8080
 async def worker_generate_content(
     task_id: str,
     base_url: str,
+    content_type: str,
+    mode: str,
+    saved_image_path: Optional[str],
     schedule_id: Optional[str],
     mood_tag: str,
     hash_tag: str,
@@ -534,25 +507,57 @@ async def worker_generate_content(
     global active_jobs_count
     active_jobs_count += 1
     try:
-        # 2. Setup LangChain with Ollama (gemma4:latest)
+        # Step 1: Image Processing (mode 분기)
+        vision_keywords = ""
+        generated_image_filenames = []
+        generated_image_urls = []
+        
+        if mode == "TRANSFORM":
+            if saved_image_path:
+                print(f"[{task_id}] Analyzing uploaded image via LLaVA...")
+                with open(saved_image_path, "rb") as f:
+                    image_bytes = f.read()
+                analysis_result = await run_in_threadpool(
+                    vision_analyzer.analyze_image_for_marketing,
+                    image_bytes
+                )
+                vision_keywords = f"\n[업로드 이미지 분석 결과]\n- 주요 객체: {', '.join(analysis_result.get('objects', []))}\n- 분위기: {', '.join(analysis_result.get('mood', []))}\n- 주요 색상: {', '.join(analysis_result.get('colors', []))}\n이 분석 결과를 바탕으로 새로운 마케팅 텍스트와 이미지 프롬프트를 작성하세요."
+        elif mode == "ORIGINAL":
+            if saved_image_path:
+                print(f"[{task_id}] Mode is ORIGINAL. Skipping AI image generation.")
+                import shutil
+                ext = os.path.splitext(saved_image_path)[1] or ".png"
+                filename = f"poster_{task_id}{ext}"
+                dest_path = os.path.join("static/images", filename)
+                shutil.copy(saved_image_path, dest_path)
+                generated_image_filenames.append(filename)
+                generated_image_urls.append(f"{base_url}/static/images/{filename}")
+
+        # Step 2: Text Generation (contentType 분기)
         chat_model = ChatOllama(
             model="gemma4:latest",
             temperature=0.7,
             base_url="http://localhost:11434"
         )
         
-        # 3. Create Prompt
         performers_section = ""
         if top_performers_context:
-            performers_section = f"""
-[과거 우수 성과 게시물 레퍼런스]
-{top_performers_context}
+            performers_section = f"\n[과거 우수 성과 게시물 레퍼런스]\n{top_performers_context}\n\n아래의 [과거 우수 성과 게시물 레퍼런스]는 우리 매장에서 반응이 가장 좋았던 홍보물들입니다. 이 텍스트들의 문체, 감성, 길이를 분석하고 모방하여 이번 타겟 시간대와 날씨에 맞는 새로운 홍보 텍스트를 작성해 주세요.\n"
 
-아래의 [과거 우수 성과 게시물 레퍼런스]는 우리 매장에서 반응이 가장 좋았던 홍보물들입니다. 이 텍스트들의 문체, 감성, 길이를 분석하고 모방하여 이번 타겟 시간대와 날씨에 맞는 새로운 홍보 텍스트를 작성해 주세요.
-"""
-        prompt_text = f"""
-당신은 소상공인을 돕는 전문 마케터입니다. 아래 정보를 바탕으로 매력적인 홍보 텍스트를 작성하고, 
-맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.
+        content_type_instruction = ""
+        if content_type == "POST":
+            content_type_instruction = "블로그나 인스타그램 포스트용이므로, 이모지를 포함하여 3문단 이상의 충분한 길이로 상세한 홍보 글을 작성하세요."
+        elif content_type == "VIDEO":
+            content_type_instruction = "숏폼 영상의 자막 및 설명란 용도이므로, 띄어쓰기 포함 50자 이내, 짧고 강렬한 1~2문장으로 작성하세요."
+
+        image_prompt_instruction = ""
+        if mode == "TRANSFORM":
+            image_prompt_instruction = "맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.\n\n날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({mood_tag})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요."
+        else:
+            image_prompt_instruction = "이미지 생성은 하지 않으므로 [IMAGE_PROMPT]는 절대 작성하지 마세요."
+
+        prompt_text = f"""당신은 소상공인을 돕는 전문 마케터입니다. 아래 정보를 바탕으로 매력적인 홍보 텍스트를 작성하세요.
+{image_prompt_instruction}
 
 [실시간 날씨 컨텍스트]
 {{weather_data}}
@@ -562,30 +567,28 @@ async def worker_generate_content(
 - 해시태그: {{hash_tag}}
 - 사용자 추가 요청: {{user_prompt}}
 - 업로드 예정 요일: {{upload_day}}
-- 업로드 예정 시간: {{upload_time}}
-{performers_section}
+- 업로드 예정 시간: {{upload_time}}{vision_keywords}{performers_section}
 중요 지시사항:
-1. 홍보 텍스트는 숏폼 영상 자막용이므로 반드시 띄어쓰기 포함 최대 50자 이내, 3문장 이내로 아주 짧게 작성하세요.
-2. "내용 :", "마케팅 문구 :" 등 어떠한 메타 텍스트나 접두사도 절대 포함하지 마세요. 오직 실제 영상에 들어갈 텍스트만 첫 줄에 작성하세요.
+1. {content_type_instruction}
+2. "내용 :", "마케팅 문구 :" 등 어떠한 메타 텍스트나 접두사도 절대 포함하지 마세요. 오직 실제 사용될 텍스트만 작성하세요.
 3. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황을 자연스럽게 반영하여 작성하세요.
-4. 날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({{mood_tag}})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요.
-5. 업로드 예정 시간({{upload_day}} {{upload_time}})에 맞는 타겟 독자 상황을 고려하세요. (예: 월요일 아침이면 출근길, 금요일 저녁이면 퇴근 후 여유 등)
-6. 해시태그({{hash_tag}})의 키워드를 홍보 텍스트에 자연스럽게 녹여 작성하세요.
+4. 업로드 예정 시간({{upload_day}} {{upload_time}})에 맞는 타겟 독자 상황을 고려하세요.
+5. 해시태그({{hash_tag}})의 키워드를 홍보 텍스트에 자연스럽게 녹여 작성하세요.
 
 출력 형식:
 (여기에 순수 홍보 텍스트만 작성)
-
+"""
+        if mode == "TRANSFORM":
+            prompt_text += """
 [IMAGE_PROMPT_1]: (English description for image 1)
 [IMAGE_PROMPT_2]: (English description for image 2)
 [IMAGE_PROMPT_3]: (English description for image 3)
-        """
-        prompt_template = PromptTemplate.from_template(prompt_text)
+"""
         
+        prompt_template = PromptTemplate.from_template(prompt_text)
         chain = prompt_template | chat_model | StrOutputParser()
         
-        # 4. Generate Text using local Ollama
         print(f"[{task_id}] Generating text via Ollama (gemma4:latest)...")
-        print(f"[{task_id}] Params - moodTag: {mood_tag}, hashTag: {hash_tag}, uploadDay: {upload_day}, uploadTime: {upload_time}, scheduleId: {schedule_id}")
         result_text = chain.invoke({
             "weather_data": weather_data,
             "mood_tag": mood_tag,
@@ -595,70 +598,64 @@ async def worker_generate_content(
             "upload_time": upload_time
         })
         
-        # 5. Extract Image Prompts and Generate Images via Local SDXL
-        generated_image_urls = []
-        generated_image_filenames = []
-        
         import re
-        image_prompts = re.findall(r'\[IMAGE_PROMPT(?:_\d+)?\]:\s*(.*)', result_text)
-        
-        if image_prompts:
-            print(f"[{task_id}] Generating {len(image_prompts[:3])} poster images via local SDXL...")
-            try:
-                for prompt in image_prompts[:3]:
-                    filename = await run_in_threadpool(
-                        image_generator.generate_image,
-                        prompt.strip()
-                    )
-                    if filename:
-                        generated_image_filenames.append(filename)
-                        generated_image_urls.append(f"{base_url}/static/images/{filename}")
-            except Exception as e:
-                print(f"[{task_id}] Image generation failed: {e}")
+        if mode == "TRANSFORM":
+            image_prompts = re.findall(r'\[IMAGE_PROMPT(?:_\d+)?\]:\s*(.*)', result_text)
+            if image_prompts:
+                print(f"[{task_id}] Generating {len(image_prompts[:3])} poster images via local SDXL...")
+                try:
+                    for prompt in image_prompts[:3]:
+                        filename = await run_in_threadpool(
+                            image_generator.generate_image,
+                            prompt.strip()
+                        )
+                        if filename:
+                            generated_image_filenames.append(filename)
+                            generated_image_urls.append(f"{base_url}/static/images/{filename}")
+                except Exception as e:
+                    print(f"[{task_id}] Image generation failed: {e}")
                     
-        # 6. Video Generation Pipeline (FFmpeg 기반 - Ken Burns + 텍스트 오버레이)
+        # 텍스트 정리
+        clean_text = re.sub(r'\[IMAGE_PROMPT.*', '', result_text, flags=re.DOTALL).strip()
+        clean_text = re.sub(r'^(?:홍보\s*텍스트|마케팅\s*문구|홍보\s*문구|텍스트\s*내용|내용|자막|출력\s*형식|문구)[\s\:\-]*', '', clean_text, flags=re.IGNORECASE).strip()
+        clean_text = re.sub(r'(?:마케팅\s*문구\s*:?)$', '', clean_text, flags=re.IGNORECASE).strip()
+        clean_text = clean_text.strip('\'" \n')
+                    
+        # Step 3: Video Rendering (contentType 분기)
         generated_video_url = None
         s3_video_url = None
         local_video_path = None
         
-        if generated_image_filenames:
-            print(f"[{task_id}] Starting video generation via FFmpeg with {len(generated_image_filenames)} images...")
-            try:
-                # 로컬 이미지 파일 경로들을 리스트로 전달
-                local_image_paths = [os.path.join("static/images", fn) for fn in generated_image_filenames]
-                
-                # 텍스트 정리 (프롬프트 부분 제거)
-                clean_text = re.sub(r'\[IMAGE_PROMPT.*', '', result_text, flags=re.DOTALL).strip()
-                # 정규식을 통한 불필요한 접두사(메타 텍스트) 정밀 파싱
-                clean_text = re.sub(r'^(?:홍보\s*텍스트|마케팅\s*문구|홍보\s*문구|텍스트\s*내용|내용|자막|출력\s*형식|문구)[\s\:\-]*', '', clean_text, flags=re.IGNORECASE).strip()
-                clean_text = re.sub(r'(?:마케팅\s*문구\s*:?)$', '', clean_text, flags=re.IGNORECASE).strip() # Suffix removal just in case
-                clean_text = clean_text.strip('\'" \n')
-                
-                filename = await run_in_threadpool(
-                    video_generator.create_shortform_video,
-                    local_image_paths,
-                    clean_text
-                )
-                generated_video_url = f"{base_url}/static/videos/{filename}"
-                
-                # S3 upload
+        if content_type == "VIDEO":
+            if generated_image_filenames:
+                print(f"[{task_id}] Starting video generation via FFmpeg with {len(generated_image_filenames)} images...")
                 try:
-                    local_video_path = os.path.join("static/videos", filename)
-                    print(f"[{task_id}] Uploading generated video to S3...")
-                    
-                    # 변경된 부분: S3에 올라갈 때 'content/' 폴더 안에 들어가도록 파일명(경로) 지정
-                    s3_object_name = f"content/{filename}" 
-                    
-                    s3_video_url = await run_in_threadpool(
-                        s3_uploader.upload_video_to_s3,
-                        local_video_path,
-                        s3_object_name
+                    local_image_paths = [os.path.join("static/images", fn) for fn in generated_image_filenames]
+                    filename = await run_in_threadpool(
+                        video_generator.create_shortform_video,
+                        local_image_paths,
+                        clean_text
                     )
-                    print(f"[{task_id}] S3 upload succeeded: {s3_video_url}")
-                except Exception as s3e:
-                    print(f"[{task_id}] S3 upload failed: {s3e}")
-            except Exception as e:
-                print(f"[{task_id}] Video generation failed: {e}")
+                    generated_video_url = f"{base_url}/static/videos/{filename}"
+                    
+                    try:
+                        local_video_path = os.path.join("static/videos", filename)
+                        print(f"[{task_id}] Uploading generated video to S3...")
+                        s3_object_name = f"content/{filename}" 
+                        s3_video_url = await run_in_threadpool(
+                            s3_uploader.upload_video_to_s3,
+                            local_video_path,
+                            s3_object_name
+                        )
+                        print(f"[{task_id}] S3 upload succeeded: {s3_video_url}")
+                    except Exception as s3e:
+                        print(f"[{task_id}] S3 upload failed: {s3e}")
+                except Exception as e:
+                    print(f"[{task_id}] Video generation failed: {e}")
+            else:
+                print(f"[{task_id}] No images available for video generation.")
+        elif content_type == "POST":
+            print(f"[{task_id}] contentType is POST. Skipping video generation.")
         
         # Success Webhook Payload
         upload_schedule = f"{upload_day} {upload_time}"
@@ -668,10 +665,10 @@ async def worker_generate_content(
             "status": "SUCCESS",
             "jobType": "GENERATE_CONTENT",
             "data": {
-                "scheduleId": schedule_id,
-                "generatedText": result_text,
-                "generatedImageUrl": generated_image_urls[0] if generated_image_urls else None,
-                "generatedVideoUrl": generated_video_url,
+                "contentType": content_type,
+                "mode": mode,
+                "generatedText": clean_text,
+                "posterUrl": generated_image_urls[0] if generated_image_urls else None,
                 "s3VideoUrl": s3_video_url,
                 "localVideoPath": local_video_path,
                 "uploadSchedule": upload_schedule,
@@ -687,7 +684,6 @@ async def worker_generate_content(
 
     except Exception as e:
         print(f"[{task_id}] Task failed: {e}")
-        # Error Webhook Payload
         payload = {
             "taskId": task_id,
             "scheduleId": schedule_id,
@@ -702,6 +698,12 @@ async def worker_generate_content(
             print(f"[{task_id}] Webhook send failed: {we}")
     finally:
         active_jobs_count -= 1
+        if saved_image_path and os.path.exists(saved_image_path):
+            try:
+                os.remove(saved_image_path)
+            except Exception:
+                pass
+
 
 class UploadRequest(BaseModel):
     """YouTube 업로드 요청 모델. Spring Boot에서 Webhook으로 받은 localVideoPath를 그대로 전달합니다."""
@@ -811,14 +813,6 @@ async def upload_generated_video(request: UploadRequest):
 ### ⚡ 비동기 처리
 이 API는 **즉시 202 응답**과 `taskId`를 반환합니다. 실제 AI 생성 작업은 백그라운드에서 진행되며, 완료 시 환경 변수 `SPRING_WEBHOOK_URL`에 설정된 URL로 결과를 POST 전송합니다.
 
-### 🔄 내부 파이프라인
-```
-1. Gemma4:latest (LLM) → 마케팅 텍스트 + 이미지 프롬프트 생성
-2. SDXL (GPU) → 768×1344 세로 포스터 이미지 생성
-3. FFmpeg → Ken Burns 효과 + 자막 오버레이 숏폼 영상 생성
-4. S3 업로드 → 생성된 영상을 S3에 업로드
-```
-
 ### 📬 웹훅 콜백 형식
 작업 완료 시 다음 JSON이 Spring 백엔드로 전송됩니다:
 ```json
@@ -828,32 +822,35 @@ async def upload_generated_video(request: UploadRequest):
   "status": "SUCCESS",
   "jobType": "GENERATE_CONTENT",
   "data": {
-    "scheduleId": "42",
+    "contentType": "POST 또는 VIDEO",
+    "mode": "TRANSFORM 또는 ORIGINAL",
     "generatedText": "AI가 생성한 홍보 텍스트...",
-    "generatedImageUrl": "http://host/static/images/poster_xxx.png",
-    "generatedVideoUrl": "http://host/static/videos/shortform_xxx.mp4",
+    "posterUrl": "http://host/static/images/poster_xxx.png",
+    "s3VideoUrl": "http://host/content/shortform_xxx.mp4",
     "localVideoPath": "static/videos/shortform_xxx.mp4",
     "uploadSchedule": "월요일 18:00",
     "createdAtMillis": 1716134400000
   }
 }
 ```
-실패 시: `{"taskId": "...", "scheduleId": "42", "status": "FAILED", "jobType": "GENERATE_CONTENT", "error": "에러 메시지"}`
-
-### ⚠️ 주의사항
-- 작업 시간: GPU 성능에 따라 약 1~5분 소요
-- 서버 상태를 먼저 `/api/system/status`로 확인한 후 요청하세요.
 """,
-    responses={
-        202: {"description": "작업이 수락되어 백그라운드에서 처리 중. 반환된 taskId로 웹훅 결과를 매칭하세요."},
-    },
 )
 async def generate_content(
     request: Request,
     background_tasks: BackgroundTasks,
+    contentType: str = Form(
+        ...,
+        description="POST(블로그/인스타용 글+이미지) 또는 VIDEO(숏폼 영상)",
+        example="POST",
+    ),
+    mode: str = Form(
+        ...,
+        description="TRANSFORM(업로드 이미지 분석 후 AI 변형 생성) 또는 ORIGINAL(업로드 이미지 원본 유지)",
+        example="TRANSFORM",
+    ),
     scheduleId: Optional[str] = Form(
         None,
-        description="Spring Boot 스케줄 DB 식별자. 작업 완료 후 Webhook 콜백 시 이 값을 그대로 반환합니다.",
+        description="Spring Boot 스케줄 DB 식별자.",
         example="42",
     ),
     moodTag: str = Form(
@@ -868,52 +865,52 @@ async def generate_content(
     ),
     prompt: str = Form(
         "",
-        description="사용자 추가 프롬프트. AI에게 전달할 추가 지시사항이나 강조할 내용을 입력합니다.",
+        description="사용자 추가 프롬프트.",
         example="신메뉴 아이스 라떼를 강조해주세요",
     ),
     uploadDay: str = Form(
         ...,
-        description="업로드 예정 요일. 타겟 독자 상황에 맞는 콘텐츠를 생성하는 데 활용됩니다.",
+        description="업로드 예정 요일.",
         example="월요일",
     ),
     uploadTime: str = Form(
         ...,
-        description="업로드 예정 시간(HH:mm). 시간대에 맞는 톤과 분위기를 반영합니다.",
+        description="업로드 예정 시간(HH:mm).",
         example="18:00",
     ),
     image: Optional[UploadFile] = File(
         None,
-        description="(선택) 참고용 이미지 파일. 현재 버전에서는 사용되지 않지만, 향후 이미지 분석 연동을 위해 예약된 필드입니다.",
+        description="(선택) 참고용 이미지 파일. mode가 TRANSFORM이면 분석용, ORIGINAL이면 원본으로 사용됩니다.",
     ),
     lat: Optional[float] = Form(
         None,
-        description="(선택) 매장 위치의 위도. 입력 시 실시간 날씨를 반영한 콘텐츠를 생성합니다. 미입력 시 기본 맑은 날씨로 처리됩니다.",
+        description="(선택) 매장 위치의 위도.",
         example=35.8714,
     ),
     lon: Optional[float] = Form(
         None,
-        description="(선택) 매장 위치의 경도. lat과 함께 입력해야 날씨 정보가 반영됩니다.",
+        description="(선택) 매장 위치의 경도.",
         example=128.6014,
     ),
     topPerformers: Optional[str] = Form(
         None,
-        description="""
-(선택) 과거 우수 성과 게시물 데이터 (JSON 문자열). Spring 백엔드에서 클릭 수 기준 상위 게시물을 전달하면, AI가 해당 문체와 감성을 참고하여 새 콘텐츠를 생성합니다.
-
-**JSON 형식 예시:**
-```json
-[
-  {"clickCount": 150, "marketingText": "오늘 하루도 커피 한 잔의 여유!", "tags": ["카페", "아메리카노"]},
-  {"clickCount": 120, "marketingText": "비 오는 날 따뜻한 라떼 어때요?", "tags": ["카페", "라떼"]}
-]
-```
-""",
+        description="(선택) 과거 우수 성과 게시물 데이터 (JSON 문자열).",
     ),
 ):
     task_id = str(uuid.uuid4())
     weather_data = get_weather_context(lat, lon)
     base_url = str(request.base_url).rstrip("/")
     
+    saved_image_path = None
+    if image and image.filename:
+        upload_dir = "static/uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        ext = os.path.splitext(image.filename)[1] or ".png"
+        saved_image_path = os.path.join(upload_dir, f"upload_{task_id}{ext}")
+        content_bytes = await image.read()
+        with open(saved_image_path, "wb") as f:
+            f.write(content_bytes)
+
     top_performers_context = ""
     if topPerformers:
         try:
@@ -937,6 +934,9 @@ async def generate_content(
         worker_generate_content,
         task_id=task_id,
         base_url=base_url,
+        content_type=contentType,
+        mode=mode,
+        saved_image_path=saved_image_path,
         schedule_id=scheduleId,
         mood_tag=moodTag,
         hash_tag=hashTag,
@@ -947,214 +947,6 @@ async def generate_content(
         top_performers_context=top_performers_context
     )
     
-    return JobAcceptedResponse(taskId=task_id)
-
-async def worker_create_shortform(
-    task_id: str,
-    base_url: str,
-    saved_paths: List[str],
-    text: str,
-    seconds_per_image: float
-):
-    global active_jobs_count
-    active_jobs_count += 1
-    n = len(saved_paths)
-    try:
-        print(f"[{task_id}] Creating shortform video from {n} images...")
-        td = 0.7 if n > 1 else 0.0
-        try:
-            filename = await run_in_threadpool(
-                video_generator.create_shortform_video,
-                saved_paths,
-                text,
-                "static/videos",
-                seconds_per_image,
-                td,
-            )
-        finally:
-            # 업로드 임시 파일 정리
-            for p in saved_paths:
-                if os.path.exists(p):
-                    os.remove(p)
-
-        # 실제 생성된 비디오 길이를 ffprobe로 정확하게 조회
-        try:
-            video_full_path = os.path.join("static/videos", filename)
-            probe_cmd = [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1", video_full_path
-            ]
-            probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            total_dur = round(float(probe_res.stdout.strip()), 2)
-        except Exception as e:
-            print(f"[{task_id}] Failed to probe video duration: {e}. Using fallback calculation.")
-            total_dur = round(n * seconds_per_image - max(0, n - 1) * td, 2)
-
-        generated_video_url = f"{base_url}/static/videos/{filename}"
-        
-        # YouTube upload
-        youtube_url = None
-        try:
-            local_video_path = os.path.join("static/videos", filename)
-            print(f"[{task_id}] Uploading generated video to YouTube...")
-            # Prepare title
-            yt_title = text.replace("\n", " ").strip()
-            if len(yt_title) > 60:
-                yt_title = yt_title[:57] + "..."
-            if "#shorts" not in yt_title.lower():
-                yt_title += " #shorts"
-                
-            yt_description = f"{text}\n\nGenerated by All-Ligo Marketing AI Agent."
-            yt_tags = ["Shorts", "Marketing", "All-Ligo"]
-            
-            youtube_url = await run_in_threadpool(
-                youtube_uploader.upload_video,
-                local_video_path,
-                yt_title,
-                yt_description,
-                yt_tags
-            )
-            print(f"[{task_id}] YouTube upload succeeded: {youtube_url}")
-        except Exception as yte:
-            print(f"[{task_id}] YouTube upload failed, falling back to local video URL: {yte}")
-            youtube_url = None
-
-        # Success Webhook Payload
-        payload = {
-            "taskId": task_id,
-            "status": "SUCCESS",
-            "jobType": "CREATE_SHORTFORM",
-            "data": {
-                "videoUrl": generated_video_url,
-                "youtubeUrl": youtube_url,
-                "imageCount": n,
-                "marketingText": text,
-                "durationSeconds": total_dur,
-                "createdAtMillis": int(time.time() * 1000)
-            }
-        }
-        print(f"[{task_id}] Task completed successfully. Sending webhook to {SPRING_WEBHOOK_URL}...")
-        print(f"[{task_id}] ▶ Webhook Payload (CREATE_SHORTFORM / SUCCESS):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
-        try:
-            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
-        except Exception as we:
-            print(f"[{task_id}] Webhook send failed: {we}")
-            
-    except Exception as e:
-        print(f"[{task_id}] Task failed: {e}")
-        # Error Webhook Payload
-        payload = {
-            "taskId": task_id,
-            "status": "FAILED",
-            "jobType": "CREATE_SHORTFORM",
-            "error": str(e)
-        }
-        print(f"[{task_id}] ▶ Webhook Payload (CREATE_SHORTFORM / FAILED):\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
-        try:
-            requests.post(SPRING_WEBHOOK_URL, json=payload, timeout=5)
-        except Exception as we:
-            print(f"[{task_id}] Webhook send failed: {we}")
-    finally:
-        active_jobs_count -= 1
-
-
-@app.post(
-    "/api/marketing/create-shortform",
-    response_model=JobAcceptedResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    tags=["🖼️ 마케팅 콘텐츠 생성"],
-    summary="사용자 이미지 기반 숏폼 영상 생성",
-    description="""
-사용자가 직접 업로드한 **1~5장의 이미지**와 마케팅 문구로 프로페셔널 숏폼 영상(Instagram Reels / YouTube Shorts 품질)을 생성합니다.
-
-### ⚡ 비동기 처리
-`/api/marketing/generate`와 동일하게 즉시 202 응답 + `taskId`를 반환하고, 완료 시 웹훅으로 결과를 전송합니다.
-
-### 🎬 영상 제작 파이프라인
-```
-1. 이미지 전처리: 1080×1920 (9:16) 리사이즈 + 중앙 크롭
-2. Ken Burns 효과: 각 이미지에 줌인/줌아웃/패닝 중 랜덤 적용
-3. 트랜지션: fade, slide, wipe, circlecrop 등 광고 스타일 전환
-4. 자막 오버레이: PIL로 한글 대형 자막 + 그라데이션 배경 렌더링
-5. TTS 음성: edge-tts로 한국어 나레이션 자동 생성
-6. BGM 믹싱: static/bgm/ 폴더의 배경 음악 랜덤 선택
-7. 시네마틱 필터: 색감 보정 + 선명도 + 비네팅 효과
-```
-
-### 📐 출력 사양
-- 해상도: **1080×1920** (세로 9:16)
-- 코덱: H.264 (libx264)
-- 포맷: MP4 (faststart)
-
-### 📬 웹훅 콜백 형식
-```json
-{
-  "taskId": "a1b2c3d4-...",
-  "status": "SUCCESS",
-  "jobType": "CREATE_SHORTFORM",
-  "data": {
-    "videoUrl": "http://host/static/videos/shortform_xxx.mp4",
-    "imageCount": 3,
-    "marketingText": "입력한 마케팅 문구",
-    "durationSeconds": 7.6,
-    "createdAtMillis": 1716134400000
-  }
-}
-```
-""",
-    responses={
-        202: {"description": "숏폼 영상 생성 작업이 수락됨. 백그라운드에서 처리 후 웹훅으로 결과 전송"},
-        400: {"description": "이미지 개수가 1~5개 범위를 벗어남"},
-    },
-)
-async def create_shortform(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    images: List[UploadFile] = File(
-        ...,
-        description="숏폼 영상에 사용할 이미지 파일들 (최소 1개, 최대 5개). 지원 형식: JPG, PNG, WebP. 여러 장 업로드 시 순서대로 트랜지션이 적용됩니다.",
-    ),
-    text: str = Form(
-        ...,
-        description="영상 하단에 자막으로 표시될 마케팅 문구. 한 줄 14글자, 최대 4줄까지 표시됩니다. TTS 나레이션의 원본 텍스트로도 사용됩니다.",
-        example="오늘의 특별한 커피 한 잔으로\n하루를 시작해보세요!",
-    ),
-    secondsPerImage: float = Form(
-        3.0,
-        description="이미지당 화면에 표시되는 시간 (초). 기본값 3.0초. 이미지가 여러 장이면 트랜지션 시간(0.7초)이 겹치므로, 총 영상 길이 = (이미지 수 × 이 값) - ((이미지 수 - 1) × 0.7초)",
-        example=3.0,
-        ge=1.0,
-        le=10.0,
-    ),
-):
-    if len(images) < 1 or len(images) > 5:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="이미지는 1~5개까지 업로드할 수 있습니다.")
-
-    task_id = str(uuid.uuid4())
-    upload_dir = "static/uploads"
-    os.makedirs(upload_dir, exist_ok=True)
-    
-    saved_paths = []
-    for i, img in enumerate(images):
-        ext = os.path.splitext(img.filename or "img.png")[1] or ".png"
-        path = os.path.join(upload_dir, f"upload_{task_id}_{i}{ext}")
-        content = await img.read()
-        with open(path, "wb") as f:
-            f.write(content)
-        saved_paths.append(path)
-
-    base_url = str(request.base_url).rstrip("/")
-    
-    background_tasks.add_task(
-        worker_create_shortform,
-        task_id=task_id,
-        base_url=base_url,
-        saved_paths=saved_paths,
-        text=text,
-        seconds_per_image=secondsPerImage
-    )
-
     return JobAcceptedResponse(taskId=task_id)
 
 @app.post(
