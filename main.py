@@ -548,7 +548,8 @@ async def worker_generate_content(
         chat_model = ChatOllama(
             model="gemma4:latest",
             temperature=0.7,
-            base_url="http://localhost:11434"
+            base_url="http://localhost:11434",
+            keep_alive=0
         )
         
         performers_section = ""

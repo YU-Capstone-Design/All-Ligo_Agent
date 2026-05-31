@@ -18,7 +18,8 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
     chat_model = ChatOllama(
         model="llava", 
         temperature=0.2, 
-        base_url="http://localhost:11434"
+        base_url="http://localhost:11434",
+        keep_alive=0
     )
     
     # 3. 프롬프트 구성 (객체, 분위기, 색감을 콤마로 구분된 해시태그 형태로 요구)
