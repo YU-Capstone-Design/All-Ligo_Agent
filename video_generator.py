@@ -392,23 +392,44 @@ def create_shortform_video(
             _preprocess_image(p, pp)
             processed.append(pp)
 
+        # 1.5. TTS 생성 및 재생 시간 추출 (가장 중요)
+        tts_mp3 = os.path.join(temp, "tts_voice.mp3")
+        tts_duration = 0.0
+        if marketing_text.strip():
+            try:
+                _create_tts_audio(marketing_text, tts_mp3)
+                if os.path.exists(tts_mp3):
+                    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", tts_mp3]
+                    tts_duration = float(subprocess.check_output(cmd).decode("utf-8").strip())
+                    print(f"  TTS duration detected: {tts_duration}s")
+            except Exception as e:
+                print(f"TTS audio generation/duration failed: {e}. Skipping TTS.")
+
+        # 동적 전체 길이 계산 (TTS 길이 + 여운 1.5초)
+        if tts_duration > 0.0:
+            target_total_dur = round(tts_duration + 1.5, 2)
+        else:
+            target_total_dur = round(n * seconds_per_image, 2)
+            
+        print(f"Target total duration dynamically set to: {target_total_dur}s")
+
         # 2. BGM 선택 및 비트 분석
         bgm_mp3 = _get_random_bgm()
         
-        # 비트 컷 전환 타임스탬프 계산 (N-1개)
-        # min_interval은 트랜지션 겹침을 방지하기 위해 td + 1.0초 이상으로 보장
+        # 비트 분석 시, target_total_dur을 균등 분할한 값을 기준으로 최소 간격 설정
+        avg_dur = target_total_dur / n
         beat_transitions = _analyze_bgm_beats(
             bgm_mp3, 
             num_segments=n, 
-            min_interval=max(1.8, td + 1.0), 
-            fallback_interval=seconds_per_image
+            min_interval=max(1.5, avg_dur * 0.6), 
+            fallback_interval=avg_dur
         )
         
         # 세그먼트별 재생 시간 계산
         segment_durations = []
         if n == 1:
-            segment_durations = [seconds_per_image]
-            total_dur = seconds_per_image
+            segment_durations = [target_total_dur]
+            total_dur = target_total_dur
             td = 0.0  # 단일 이미지는 전환 없음
         else:
             # 첫 번째 세그먼트
@@ -416,11 +437,14 @@ def create_shortform_video(
             # 중간 세그먼트들
             for i in range(1, n - 1):
                 segment_durations.append(beat_transitions[i] - beat_transitions[i-1] + td)
-            # 마지막 세그먼트
-            segment_durations.append(seconds_per_image + td)
+            # 마지막 세그먼트 (남은 시간 할당)
+            last_segment_dur = target_total_dur - beat_transitions[-1] + td
+            if last_segment_dur < 1.0:
+                last_segment_dur = 1.0  # 최소 보장
+            segment_durations.append(last_segment_dur)
             
-            # 총 재생 시간 (소수점 둘째 자리 반올림)
-            total_dur = round(beat_transitions[-1] + seconds_per_image, 2)
+            # 최종 계산된 총 재생 시간
+            total_dur = round(sum(segment_durations) - (n - 1) * td, 2)
             
         print(f"Segment durations: {segment_durations}")
         print(f"Total video duration: {total_dur}s")
@@ -450,14 +474,7 @@ def create_shortform_video(
                 fps
             )
             print("  Subtitle typing sequence generated.")
-        
-        # 6. TTS 생성
-        tts_mp3 = os.path.join(temp, "tts_voice.mp3")
-        if marketing_text.strip():
-            try:
-                _create_tts_audio(marketing_text, tts_mp3)
-            except Exception as e:
-                print(f"TTS audio generation failed: {e}. Skipping TTS.")
+
         
         # 7. 최종 합성
         filename = f"shortform_{int(time.time())}.mp4"
