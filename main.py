@@ -592,7 +592,7 @@ async def worker_generate_content(
 2. "내용 :", "마케팅 문구 :" 등 어떠한 메타 텍스트나 접두사도 절대 포함하지 마세요. 오직 실제 사용될 텍스트만 작성하세요.
 3. 홍보 텍스트는 [실시간 날씨 컨텍스트]의 기상 상황을 자연스럽게 반영하여 작성하세요.
 4. 업로드 예정 시간({{upload_day}} {{upload_time}})에 맞는 타겟 독자 상황을 고려하세요.
-5. 해시태그({{hash_tag}})의 키워드를 홍보 텍스트에 자연스럽게 녹여 작성하세요.
+5. 해시태그({{hash_tag}})의 의미만 홍보 텍스트 내용에 자연스럽게 반영하되, 텍스트 내에 '#' 기호나 해시태그 단어 자체는 절대 포함하지 마세요. (나레이션용 문장만 작성)
 
 출력 형식:
 (여기에 순수 홍보 텍스트만 작성)
@@ -638,6 +638,7 @@ async def worker_generate_content(
         clean_text = re.sub(r'\[IMAGE_PROMPT.*', '', result_text, flags=re.DOTALL).strip()
         clean_text = re.sub(r'^(?:홍보\s*텍스트|마케팅\s*문구|홍보\s*문구|텍스트\s*내용|내용|자막|출력\s*형식|문구)[\s\:\-]*', '', clean_text, flags=re.IGNORECASE).strip()
         clean_text = re.sub(r'(?:마케팅\s*문구\s*:?)$', '', clean_text, flags=re.IGNORECASE).strip()
+        clean_text = re.sub(r'#\S+', '', clean_text).strip()
         clean_text = clean_text.strip('\'" \n')
                     
         # Step 3: Video Rendering (contentType 분기)
