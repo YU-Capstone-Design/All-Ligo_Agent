@@ -571,7 +571,7 @@ async def worker_generate_content(
 
         image_prompt_instruction = ""
         if resolved_mode == "TRANSFORM" and content_type == "VIDEO":
-            image_prompt_instruction = "맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.\n\n날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({mood_tag})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요."
+            image_prompt_instruction = "맨 마지막 줄에 포스터 이미지를 만들기 위한 [IMAGE_PROMPT]: (영어 프롬프트) 를 작성해주세요.\n\n날씨에 어울리는 시각적 분위기(visual cue)와 분위기 태그({mood_tag})의 감성을 반영한 3개의 서로 다른 고품질 이미지 프롬프트를 반드시 영어로 작성하세요.\n중요: 이미지 프롬프트를 작성할 때, '사용자 추가 요청'에 명시된 특징(동물, 사물, 형태 등)이 있다면 반드시 이를 메인 피사체로 삼아 작성하세요. 만약 사용자 요청에서 명확한 형체를 확인할 수 없다면 '업로드 이미지 분석 결과'에 나온 피사체를 우선적으로 사용하세요."
         else:
             image_prompt_instruction = "이미지 생성은 하지 않으므로 [IMAGE_PROMPT]는 절대 작성하지 마세요."
 
