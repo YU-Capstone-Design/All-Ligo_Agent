@@ -212,6 +212,39 @@ def _create_typing_overlay_sequence(
     return os.path.join(frames_dir, "text_frame_%04d.png")
 
 
+def _run_ffmpeg(cmd: List[str], timeout: int = 120):
+    """FFmpeg 명령을 실행합니다. NVENC가 포함된 경우 실패 시 CPU(libx264) 코덱으로 자동 폴백합니다."""
+    try:
+        print(f"Executing FFmpeg: {' '.join(cmd)}")
+        subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
+    except subprocess.CalledProcessError as e:
+        # NVENC 인코딩 에러 시 CPU(libx264) 및 CPU 관련 옵션으로 재시도
+        if "h264_nvenc" in cmd:
+            print("NVENC encoding failed (likely not supported on this FFmpeg build). Falling back to CPU (libx264)...")
+            new_cmd = []
+            skip = False
+            for arg in cmd:
+                if skip:
+                    skip = False
+                    continue
+                if arg == "h264_nvenc":
+                    new_cmd.append("libx264")
+                elif arg == "-cq":
+                    new_cmd.append("-crf")
+                elif arg == "-preset":
+                    new_cmd.append("-preset")
+                    new_cmd.append("fast")
+                    skip = True
+                else:
+                    new_cmd.append(arg)
+            print(f"Executing Fallback FFmpeg: {' '.join(new_cmd)}")
+            subprocess.run(new_cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        else:
+            print(f"FFmpeg stdout: {e.stdout}")
+            print(f"FFmpeg stderr: {e.stderr}")
+            raise e
+
+
 def _create_segment(img_path: str, out_path: str, idx: int, duration: float, fps: int = 30):
     """하나의 이미지에 Ken Burns 효과를 적용한 영상 세그먼트를 생성합니다."""
     frames = int(duration * fps)
@@ -221,10 +254,11 @@ def _create_segment(img_path: str, out_path: str, idx: int, duration: float, fps
     vf = (f"zoompan=z='{z}':x='{x}':y='{y}':d={frames}"
           f":s={SHORTS_W}x{SHORTS_H}:fps={fps}")
 
+    # RTX 4090 GPU를 백분 활용할 수 있도록 NVENC 가속 및 고화질 설정(-cq 17) 적용
     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", img_path, "-t", str(duration),
-           "-vf", vf, "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+           "-vf", vf, "-c:v", "h264_nvenc", "-preset", "p6", "-cq", "17",
            "-pix_fmt", "yuv420p", out_path]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=True)
+    _run_ffmpeg(cmd, timeout=60)
 
 
 def _join_segments(segments: List[str], out_path: str, td: float, segment_durations: List[float]):
@@ -251,12 +285,13 @@ def _join_segments(segments: List[str], out_path: str, td: float, segment_durati
 
     fc = ";".join(fc_parts)
 
+    # NVENC 가속 및 고화질 설정 적용
     cmd = ["ffmpeg", "-y"] + inputs + [
         "-filter_complex", fc,
         "-map", "[vout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+        "-c:v", "h264_nvenc", "-preset", "p6", "-cq", "17",
         "-pix_fmt", "yuv420p", out_path]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
+    _run_ffmpeg(cmd, timeout=120)
 
 
 def _create_tts_audio(text: str, out_path: str, voice: str = "ko-KR-SunHiNeural"):
@@ -350,13 +385,13 @@ def _composite_final(
     if audio_fc:
         cmd.extend(["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"])
     
+    # 최종 본 인코딩 시 NVENC GPU 가속 및 고화질 설정 적용
     cmd.extend([
-           "-c:v", "libx264", "-preset", "fast", "-crf", "20",
+           "-c:v", "h264_nvenc", "-preset", "p6", "-cq", "17",
            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", str(total_dur),
            out_path])
     
-    print(f"Executing FFmpeg composition: {' '.join(cmd)}")
-    subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=True)
+    _run_ffmpeg(cmd, timeout=120)
 
 
 # ===== Public API =====

@@ -59,7 +59,8 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
             "temperature": 0.2,
             "num_ctx": 4096  # 불필요하게 큰 컨텍스트(32768 등) 방지하여 VRAM 점유 및 hang 해결
         },
-        "stream": False
+        "stream": False,
+        "keep_alive": 0  # 분석 작업이 끝나면 Ollama가 GPU 메모리(11GB)를 즉시 해제하도록 함
     }
     
     # 3. 모델 호출
