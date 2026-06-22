@@ -34,15 +34,20 @@ def analyze_image_for_marketing(image_bytes: bytes) -> dict:
     # 2. Ollama API 직접 호출 (LangChain 의존성 제거로 안정성/성능 극대화)
     url = "http://localhost:11434/api/chat"
     prompt_text = (
-        "You are an expert marketing analyst. Look at this image and extract key elements for an Instagram advertisement. "
+        "You are an expert marketing analyst. Look at this image and extract key elements for an advertisement. "
+        "CRITICAL INSTRUCTION: Be highly specific about the objects and environment in the image. DO NOT use generic, broad terms. "
+        "Identify the exact type of space, food, or item. For example: "
+        "- For spaces: use 'vacant commercial office space' or 'empty retail shop' instead of just 'room' or 'space'. "
+        "- For food/pastries: use 'Mont Blanc pastry with chestnut cream' instead of 'bread' or 'pastry'; use 'grilled ribeye steak' instead of 'food' or 'meat'. "
+        "- For objects: use 'wooden dining table' instead of 'table'.\n"
         "Provide your analysis exactly in this format:\n"
-        "Objects: [main objects separated by comma]\n"
+        "Objects: [highly specific main objects separated by comma]\n"
         "Mood: [emotional mood and vibe separated by comma]\n"
         "Colors: [dominant colors separated by comma]"
     )
     
     payload = {
-        "model": "llava:latest",
+        "model": "llava:13b",
         "messages": [
             {
                 "role": "user",
