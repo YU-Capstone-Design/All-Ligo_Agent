@@ -7,3 +7,5 @@ server.log
 client_secret.json
 token.json
 .env
+venv/
+.venv/
