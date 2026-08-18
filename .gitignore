@@ -9,3 +9,4 @@ token.json
 .env
 venv/
 .venv/
+.idea
