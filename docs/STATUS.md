@@ -70,6 +70,7 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 
 ## 진행 로그
 
+- 2026-10-05: 사용자 지시로 **GitHub 푸시 완료** (`origin/main` 28d864c → 1efae33, 커밋 33개). 푸시 전 변경분 전체를 비밀값·실제 호스트명·개인 메모 기준으로 검사해 이상 없음.
 - 2026-10-04 오전: `PROJECT_OVERVIEW.md`, 상위 `WORKSPACE.md` 작성. 터널 점검, 서버 기동.
 - 2026-10-04 오후: 안정화 커밋 12개 (`f416a89` ~ `9af89ca`, 상세는 PLAN 및 `git log`). 운영 서버 새 코드로 재기동. README·문서 갱신.
 - 의도치 않은 부작용 1건: Spring 콜백 URL 에 빈 `{}` POST 1회(200). 안건 파일 하단에 기록.
