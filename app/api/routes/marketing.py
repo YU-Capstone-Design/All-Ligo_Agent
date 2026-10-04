@@ -146,16 +146,25 @@ async def generate_content(
 
 ### 에러 케이스
 - 404: 지정한 로컬 비디오 파일이 서버에 존재하지 않음
-- 400: 비디오 파일이 mp4 형식이 아니거나 크기가 0바이트
+- 400: 비디오 파일이 mp4 형식이 아니거나 크기가 0바이트, 또는 `static/videos/` 밖의 경로
 - 500: YouTube API 업로드 실패
 """,
 )
 async def upload_generated_video(request: UploadRequest) -> UploadResponse:
     # 웹훅으로 내보낸 상대 경로("static/videos/xxx.mp4")를 절대 경로로 되돌립니다.
-    video_path = settings.resolve_path(request.localVideoPath)
+    # resolve() 로 ".." 와 심볼릭 링크를 풀어 실제 위치를 기준으로 검사합니다.
+    video_path = settings.resolve_path(request.localVideoPath).resolve()
 
     # --- 업로드 전 파일 검증 ---
-    if not video_path.exists():
+    # 이 서버가 만든 영상(static/videos 하위)만 업로드할 수 있습니다.
+    # 검사하지 않으면 서버 안의 아무 mp4 나 경로만 알면 YouTube 에 올릴 수 있습니다.
+    if not video_path.is_relative_to(settings.VIDEOS_DIR.resolve()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"이 서버가 생성한 영상(static/videos/)만 업로드할 수 있습니다: {request.localVideoPath}",
+        )
+
+    if not video_path.is_file():
         raise HTTPException(
             status_code=404,
             detail=f"해당 로컬 비디오 파일을 찾을 수 없습니다: {request.localVideoPath}",
