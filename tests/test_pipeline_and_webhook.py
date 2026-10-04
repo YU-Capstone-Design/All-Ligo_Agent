@@ -92,6 +92,55 @@ def test_이미지_프롬프트가_빠지면_한번_재생성한다(isolated_sta
     assert sent[0]["status"] == "SUCCESS" and sent[0]["data"]["localVideoPath"]
 
 
+def test_VIDEO_AI이미지가_없으면_업로드_사진으로_영상을_만든다(isolated_static, sent, fake_ai, monkeypatch):
+    upload = isolated_static / "static" / "uploads" / "upload_0.png"
+    upload.write_bytes(b"png")
+    monkeypatch.setattr(cp.image_service, "generate_images", lambda prompts: [])
+
+    asyncio.run(cp.run_content_generation(_request(saved_image_paths=[upload])))
+
+    assert sent[0]["status"] == "SUCCESS"
+    assert sent[0]["data"]["localVideoPath"] == "static/videos/shortform_test.mp4"
+    assert sent[0]["data"]["posterUrl"].endswith("/static/images/poster_task-1_0.png")
+    used_images = fake_ai["video"][0][0]
+    assert [p.split("/")[-1] for p in used_images] == ["poster_task-1_0.png"]
+
+
+def test_VIDEO_소재가_하나도_없으면_FAILED(isolated_static, sent, fake_ai, monkeypatch):
+    monkeypatch.setattr(cp.image_service, "generate_images", lambda prompts: [])
+
+    asyncio.run(cp.run_content_generation(_request()))
+
+    assert sent[0]["status"] == "FAILED"
+    assert "사용할 이미지가 없습니다" in sent[0]["error"]
+    assert fake_ai["video"] == []
+
+
+def test_VIDEO_렌더링이_실패하면_FAILED(isolated_static, sent, fake_ai, monkeypatch):
+    def broken_render(paths, text):
+        raise RuntimeError("ffmpeg exploded")
+
+    monkeypatch.setattr(cp, "create_shortform_video", broken_render)
+
+    asyncio.run(cp.run_content_generation(_request()))
+
+    assert sent[0]["status"] == "FAILED"
+    assert "렌더링 오류" in sent[0]["error"]
+
+
+def test_S3만_실패하면_영상이_있으므로_SUCCESS(isolated_static, sent, fake_ai, monkeypatch):
+    def s3_down(path, key):
+        raise ConnectionError("S3 down")
+
+    monkeypatch.setattr(cp.storage_service, "upload_video_to_s3", s3_down)
+
+    asyncio.run(cp.run_content_generation(_request()))
+
+    data = sent[0]["data"]
+    assert sent[0]["status"] == "SUCCESS"
+    assert data["s3VideoUrl"] is None and data["localVideoPath"] == "static/videos/shortform_test.mp4"
+
+
 def test_LLM이_빈_응답이면_FAILED(isolated_static, sent, fake_ai):
     fake_ai["responses"][:] = ["", "   "]
     asyncio.run(cp.run_content_generation(_request()))

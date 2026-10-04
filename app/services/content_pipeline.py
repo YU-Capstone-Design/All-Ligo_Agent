@@ -269,19 +269,47 @@ async def _generate_poster_images(req: ContentRequest, raw_text: str, assets: _I
 # 4단계: 영상 렌더링 및 S3 업로드
 # ---------------------------------------------------------------------------
 
+class VideoGenerationError(RuntimeError):
+    """VIDEO 요청인데 영상을 만들지 못했을 때. 파이프라인이 FAILED 웹훅으로 바꿔 보냅니다."""
+
+
+def _use_uploads_as_fallback(req: ContentRequest, assets: _ImageAssets) -> None:
+    """
+    AI 이미지가 한 장도 없을 때, 사용자가 올린 사진으로 영상 소재를 채웁니다.
+
+    VIDEO 인데 영상 없이 SUCCESS 를 보내면 Was 는 정상 생성으로 저장하고
+    예약 시각의 업로드만 조용히 건너뜁니다. 사진이라도 있으면 영상을 만드는 편이 낫습니다.
+    """
+    if assets.filenames or not req.saved_image_paths:
+        return
+
+    logger.warning(
+        "[%s] AI 이미지가 없어 업로드 사진 %d장으로 영상을 만듭니다.",
+        req.task_id, len(req.saved_image_paths),
+    )
+    for i, path in enumerate(req.saved_image_paths):
+        assets.add(_copy_to_static(path, req.task_id, i), req.base_url)
+
+
 async def _render_video(
     req: ContentRequest, assets: _ImageAssets, clean_text: str
-) -> Tuple[Optional[str], Optional[str]]:
+) -> Tuple[Optional[str], str]:
     """
     이미지들로 숏폼 영상을 만들고 S3에 업로드합니다.
 
     Returns:
-        (S3 공개 URL, 프로젝트 루트 기준 로컬 경로). 각각 실패 시 None.
-        영상은 만들어졌는데 S3 업로드만 실패하는 경우도 있으므로 두 값은 독립적입니다.
+        (S3 공개 URL 또는 None, 프로젝트 루트 기준 로컬 경로).
+        S3 업로드만 실패한 경우에는 영상이 있으므로 로컬 경로와 함께 None 을 돌려줍니다.
+
+    Raises:
+        VideoGenerationError: 소재 이미지가 없거나 렌더링에 실패해 영상이 없을 때.
     """
+    _use_uploads_as_fallback(req, assets)
+
     if not assets.filenames:
-        logger.warning("[%s] 영상 생성에 사용할 이미지가 없습니다.", req.task_id)
-        return None, None
+        raise VideoGenerationError(
+            "영상 생성 실패: 사용할 이미지가 없습니다 (AI 이미지 생성 실패, 업로드 사진 없음)"
+        )
 
     logger.info(
         "[%s] FFmpeg 영상 생성 시작 (이미지 %d장)...", req.task_id, len(assets.filenames)
@@ -294,7 +322,7 @@ async def _render_video(
         )
     except Exception as exc:
         logger.error("[%s] 영상 생성 실패: %s", req.task_id, exc)
-        return None, None
+        raise VideoGenerationError(f"영상 생성 실패: 렌더링 오류 ({exc.__class__.__name__})") from exc
 
     video_path = settings.VIDEOS_DIR / filename
     # 웹훅으로 내보내는 경로는 예전과 동일하게 "static/videos/xxx.mp4" 상대 경로 형식을 유지합니다.
