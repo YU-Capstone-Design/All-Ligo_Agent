@@ -12,3 +12,4 @@ venv/
 .idea
 failed_webhooks/
 was_todo_docs/
+youtube_uploads.json

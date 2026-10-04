@@ -7,8 +7,11 @@ OAuth 2.0 토큰(token.json)을 이용해 영상을 업로드합니다.
 """
 
 import json
+import os
+import threading
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -130,3 +133,79 @@ def upload_video(
 
     logger.info("YouTube 업로드 성공. Video ID: %s", video_id)
     return f"https://youtube.com/shorts/{video_id}"
+
+
+# ---------------------------------------------------------------------------
+# 중복 업로드 방지
+# ---------------------------------------------------------------------------
+# Was 는 업로드 요청이 실패(5xx·타임아웃)하면 다음 분에 다시 요청합니다. Agent 가 업로드를
+# 끝냈는데 응답만 유실된 경우 그대로 다시 올리면 YouTube 에 같은 영상이 두 개 생깁니다.
+# 그래서 영상 파일(절대 경로) 기준으로 업로드 결과를 기록해 두고, 같은 영상이면 기존 URL 을
+# 돌려줍니다. 같은 영상의 업로드가 진행 중일 때 재요청이 오면 앞 업로드가 끝날 때까지 기다립니다.
+
+_path_locks: Dict[str, threading.Lock] = {}
+_path_locks_guard = threading.Lock()
+_records_lock = threading.Lock()
+
+
+def _lock_for(key: str) -> threading.Lock:
+    with _path_locks_guard:
+        return _path_locks.setdefault(key, threading.Lock())
+
+
+def _load_records() -> dict:
+    try:
+        return json.loads(settings.YOUTUBE_UPLOADS_FILE.read_text())
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        # 기록 파일이 깨졌어도 업로드 자체는 막지 않습니다.
+        logger.error("업로드 기록 파일을 읽지 못했습니다(무시): %s", exc)
+        return {}
+
+
+def _save_record(key: str, youtube_url: str) -> None:
+    with _records_lock:
+        records = _load_records()
+        records[key] = {"youtubeUrl": youtube_url, "uploadedAt": datetime.now().isoformat(timespec="seconds")}
+        # 쓰는 도중 서버가 죽어도 기록이 깨지지 않도록 임시 파일에 쓴 뒤 바꿔치기합니다.
+        tmp = settings.YOUTUBE_UPLOADS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(records, indent=2, ensure_ascii=False))
+        os.replace(tmp, settings.YOUTUBE_UPLOADS_FILE)
+
+
+def find_uploaded_url(file_path: str) -> Optional[str]:
+    """이미 업로드한 영상이면 그 YouTube URL 을, 아니면 None 을 반환합니다."""
+    key = str(Path(file_path).resolve())
+    with _records_lock:
+        record = _load_records().get(key)
+    return record["youtubeUrl"] if record else None
+
+
+def upload_video_once(
+    file_path: str,
+    title: str,
+    description: str,
+    tags: Optional[List[str]] = None,
+) -> str:
+    """
+    `upload_video()` 의 중복 방지 버전. 같은 영상 파일은 한 번만 YouTube 에 올립니다.
+
+    Returns:
+        YouTube URL. 이미 올린 영상이면 처음 올렸을 때의 URL.
+    """
+    key = str(Path(file_path).resolve())
+
+    with _lock_for(key):
+        existing = find_uploaded_url(key)
+        if existing:
+            logger.info("이미 업로드된 영상입니다. 기존 URL 을 돌려줍니다: %s → %s", key, existing)
+            return existing
+
+        youtube_url = upload_video(file_path, title, description, tags)
+        try:
+            _save_record(key, youtube_url)
+        except Exception as exc:
+            # 기록 실패는 업로드 결과에 영향을 주지 않지만, 재요청 시 중복 업로드될 수 있습니다.
+            logger.error("업로드 기록 저장 실패(중복 방지가 안 될 수 있음): %s", exc)
+        return youtube_url

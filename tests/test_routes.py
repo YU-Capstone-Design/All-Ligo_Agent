@@ -132,3 +132,15 @@ def test_upload_정상_경로는_업로드된다(client, isolated_static, fake_y
     assert res.status_code == 200
     assert res.json()["youtubeUrl"] == "https://youtube.com/shorts/test"
     assert len(fake_youtube) == 1
+
+
+def test_upload_같은_영상을_다시_요청하면_다시_올리지_않고_기존_URL(client, isolated_static, fake_youtube):
+    (isolated_static / "static" / "videos" / "ok.mp4").write_bytes(b"video")
+
+    first = _upload(client, "static/videos/ok.mp4")
+    # Was 재시도처럼 같은 영상을 다른 표기(절대 경로)로 다시 요청
+    second = _upload(client, str(isolated_static / "static" / "videos" / "ok.mp4"))
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["youtubeUrl"] == second.json()["youtubeUrl"]
+    assert len(fake_youtube) == 1

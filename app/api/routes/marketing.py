@@ -144,6 +144,10 @@ async def generate_content(
 - `title`, `description`, `tags`: YouTube 메타데이터
 - `privacyStatus`: 공개 상태 (기본: unlisted)
 
+### 중복 요청
+같은 `localVideoPath` 를 다시 요청하면 YouTube 에 다시 올리지 않고 처음 업로드한 URL 을 그대로 돌려줍니다.
+같은 영상의 업로드가 진행 중이면 끝날 때까지 기다린 뒤 같은 URL 을 돌려줍니다.
+
 ### 에러 케이스
 - 404: 지정한 로컬 비디오 파일이 서버에 존재하지 않음
 - 400: 비디오 파일이 mp4 형식이 아니거나 크기가 0바이트, 또는 `static/videos/` 밖의 경로
@@ -191,8 +195,9 @@ async def upload_generated_video(request: UploadRequest) -> UploadResponse:
 
         # NOTE: 현재는 공개 상태를 항상 'unlisted'로 고정합니다.
         #       요청의 privacyStatus 값을 반영하려면 아래에 privacy_status=request.privacyStatus 를 넘기세요.
+        # 같은 영상을 다시 요청하면(Was 재시도 등) 다시 올리지 않고 기존 URL 을 돌려줍니다.
         youtube_url = await run_in_threadpool(
-            youtube_service.upload_video,
+            youtube_service.upload_video_once,
             str(video_path),
             request.title,
             request.description,

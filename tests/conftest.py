@@ -34,4 +34,5 @@ def isolated_static(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "VIDEOS_DIR", static / "videos")
     monkeypatch.setattr(settings, "UPLOADS_DIR", static / "uploads")
     monkeypatch.setattr(settings, "FAILED_WEBHOOKS_DIR", tmp_path / "failed_webhooks")
+    monkeypatch.setattr(settings, "YOUTUBE_UPLOADS_FILE", tmp_path / "youtube_uploads.json")
     return tmp_path

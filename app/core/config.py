@@ -131,6 +131,8 @@ class Settings:
     YOUTUBE_SCOPES: tuple = ("https://www.googleapis.com/auth/youtube.upload",)
     YOUTUBE_CLIENT_SECRET_FILE: Path = BASE_DIR / "client_secret.json"
     YOUTUBE_TOKEN_FILE: Path = BASE_DIR / "token.json"
+    # 업로드 완료 기록(영상 경로 → YouTube URL). 같은 영상 재요청 시 중복 업로드를 막는 데 씁니다.
+    YOUTUBE_UPLOADS_FILE: Path = BASE_DIR / "youtube_uploads.json"
 
     # ------------------------------------------------------------------
     # 헬퍼
