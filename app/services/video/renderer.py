@@ -7,6 +7,7 @@
 """
 
 import shutil
+import subprocess
 import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -44,6 +45,12 @@ def _generate_narration(marketing_text: str, temp_dir: Path) -> Tuple[Optional[P
             duration = probe_duration(str(tts_path))
             logger.info("TTS 길이 감지: %.2fs", duration)
             return tts_path, duration
+    except subprocess.CalledProcessError as exc:
+        # edge-tts 는 Microsoft 온라인 서비스를 쓰므로 네트워크 문제로도 실패합니다.
+        logger.warning(
+            "TTS 생성 실패(%s). 나레이션 없이 진행합니다. stderr: %s",
+            exc, (exc.stderr or "")[-500:],
+        )
     except Exception as exc:
         logger.warning("TTS 생성/길이 측정 실패(%s). 나레이션 없이 진행합니다.", exc)
 

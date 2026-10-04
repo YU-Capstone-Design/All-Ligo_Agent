@@ -63,7 +63,12 @@ def run_ffmpeg(cmd: List[str], timeout: int = 120) -> None:
         logger.warning("NVENC 인코딩 실패(해당 FFmpeg 빌드가 미지원일 수 있음). CPU(libx264)로 폴백합니다.")
         fallback_cmd = _to_cpu_fallback_cmd(cmd)
         logger.debug("FFmpeg 폴백 실행: %s", " ".join(fallback_cmd))
-        subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        try:
+            subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=timeout, check=True)
+        except subprocess.CalledProcessError as fallback_exc:
+            # 폴백까지 실패하면 원인을 알 수 있도록 FFmpeg 의 마지막 출력을 남깁니다.
+            logger.error("FFmpeg(CPU 폴백) stderr: %s", (fallback_exc.stderr or "")[-2000:])
+            raise
 
 
 def probe_duration(media_path: str) -> float:

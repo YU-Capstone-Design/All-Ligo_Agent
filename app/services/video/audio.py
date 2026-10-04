@@ -8,6 +8,7 @@ BGM의 비트 위치를 분석해 화면 전환 타이밍을 음악에 맞추면
 import glob
 import random
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -31,8 +32,10 @@ def create_tts_audio(text: str, out_path: Path, voice: str = TTS_VOICE) -> None:
         return
 
     logger.info("TTS 나레이션 생성 중 (voice=%s)...", voice)
+    # "edge-tts" 실행 파일을 PATH 에서 찾으면 venv 를 활성화하지 않고 띄운 서버(systemd 등)에서
+    # FileNotFoundError 로 나레이션이 조용히 빠집니다. 현재 파이썬으로 모듈을 직접 실행합니다.
     cmd = [
-        "edge-tts",
+        sys.executable, "-m", "edge_tts",
         "--voice", voice,
         "--rate=+10%",
         "--text", clean_text,
