@@ -211,6 +211,15 @@ def test_웹훅이_일시_실패_후_성공하면_보관하지_않는다(isolate
     assert not (isolated_static / "failed_webhooks").exists()
 
 
+def test_웹훅_3xx는_성공으로_보지_않는다(isolated_static, webhook_server):
+    webhook_server["responses"] = [302]
+
+    webhook_service.send_failure("task-12", "1", "에러")
+
+    assert webhook_server["calls"] == 1
+    assert (isolated_static / "failed_webhooks" / "task-12.json").exists()
+
+
 def test_웹훅_4xx는_재시도하지_않고_보관한다(isolated_static, webhook_server):
     webhook_server["responses"] = [400]
 

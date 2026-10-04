@@ -54,7 +54,8 @@ def _post_once(payload: dict) -> Tuple[Optional[str], bool]:
         return f"전송 오류: {exc}", True
 
     # 예전에는 응답 코드를 보지 않아, Spring 이 4xx/5xx 로 거절해도 성공처럼 지나갔습니다.
-    if response.ok:
+    # requests 의 response.ok 는 400 미만이면 참이라 3xx 도 성공으로 칩니다. 2xx 만 성공으로 봅니다.
+    if 200 <= response.status_code < 300:
         return None, False
     retryable = response.status_code >= 500 or response.status_code in _RETRYABLE_STATUS
     return f"HTTP {response.status_code}: {response.text[:200]}", retryable
