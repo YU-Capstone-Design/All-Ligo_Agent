@@ -42,7 +42,7 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 - ⚠ Bash에서 `pkill -f "uvicorn app.main:app"` 는 명령 자신을 죽인다(exit 144). tmux 세션 단위로 종료할 것.
 
 ### 테스트 방법 (실제 Spring 을 건드리지 않음)
-- 단위/스모크: `pytest` (33개, 약 3초, 외부 서비스 불필요)
+- 단위/스모크: `pytest` (39개, 약 3초, 외부 서비스 불필요)
 - E2E: 별도 인스턴스 `:8001` + 가짜 웹훅 수신기 `:9999`, S3 비활성
   (`SPRING_WEBHOOK_URL=http://127.0.0.1:9999/cb AWS_S3_BUCKET= uvicorn app.main:app --port 8001`)
   — `.env` 는 이미 설정된 환경 변수를 덮어쓰지 않으므로 이렇게 앞에 붙이면 된다.
@@ -75,6 +75,7 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 - 의도치 않은 부작용 1건: Spring 콜백 URL 에 빈 `{}` POST 1회(200). 안건 파일 하단에 기록.
 - 2026-10-04 저녁: 사용자가 상위 폴더에 `All-Ligo_WAS` 클론 제공. **읽기만** 해서 실제 연동 동작을 `WAS_INTEGRATION.md` 에 정리.
 - 2026-10-04 밤: 사용자 결정 반영. Agent 커밋 4개(`536fe87` 웹훅 자동 재시도, `2bdabf2` VIDEO 영상 없음 처리, `97c12a8` S3 재시도, `29fa5cb` 영문 요일 한글화), pytest 33개. Was 형태 그대로의 요청으로 E2E 확인(39초 SUCCESS). 운영 서버 19:20 재기동. 회의 안건 재작성, `was_todo_docs/` 생성(git 제외).
+- 2026-10-04 심야: Was 세션 질문(Q1~Q7) 대응. Agent 커밋 3개(`6d3de21` 웹훅 성공 판정 2xx 한정, `91513b6` YouTube 중복 업로드 방지, `75a8aba` posterUrl 공개 주소 고정 — `.env` 에 `AGENT_PUBLIC_BASE_URL` 추가). pytest 39개. 운영 서버 재기동. Was 쪽 W1·W5·W6 수정 완료(배포 대기) 문서 반영, `was_todo_docs` T1~T4 완료 표시·T6/T7 추가.
 
 ## 10/4 밤 사용자 결정
 
