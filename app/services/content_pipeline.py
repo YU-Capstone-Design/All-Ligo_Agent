@@ -172,6 +172,11 @@ async def _generate_marketing_text(
         base_url=settings.OLLAMA_BASE_URL,
         # 생성이 끝나면 GPU 메모리를 즉시 반납합니다 (이미지 생성과 VRAM을 나눠 써야 함).
         keep_alive=0,
+        # Ollama가 응답 없이 멈춰도 작업이 무한정 대기하지 않도록 상한을 둡니다.
+        client_kwargs={"timeout": settings.OLLAMA_TEXT_TIMEOUT_SEC},
+        # 사고 모드와 생성 길이를 제한해 응답 시간을 예측 가능하게 만듭니다 (config.py 참고).
+        reasoning=settings.OLLAMA_TEXT_THINKING,
+        num_predict=settings.OLLAMA_TEXT_MAX_TOKENS,
     )
 
     prompt_text = marketing_prompts.build_marketing_prompt(
@@ -186,7 +191,10 @@ async def _generate_marketing_text(
     chain = PromptTemplate.from_template(prompt_text) | chat_model | StrOutputParser()
 
     logger.info("[%s] Ollama(%s)로 텍스트 생성 중...", req.task_id, settings.OLLAMA_TEXT_MODEL)
-    return chain.invoke(
+    # chain.invoke 는 동기 호출이라 그대로 부르면 생성이 끝날 때까지 이벤트 루프 전체가 멈춥니다.
+    # (그동안 /api/system/status 같은 다른 요청도 응답하지 못함) 스레드풀에서 실행합니다.
+    return await run_in_threadpool(
+        chain.invoke,
         {
             "weather_data": req.weather_data,
             "mood_tag": req.mood_tag,
@@ -321,9 +329,10 @@ async def run_content_generation(req: ContentRequest) -> None:
             else:
                 logger.info("[%s] contentType이 POST이므로 영상 생성을 건너뜁니다.", req.task_id)
 
-            # 6. 성공 웹훅
+            # 6. 성공 웹훅 (requests 기반 동기 호출이라 스레드풀에서 보냅니다)
             logger.info("[%s] 작업 완료. 결과를 전송합니다.", req.task_id)
-            webhook_service.send_success(
+            await run_in_threadpool(
+                webhook_service.send_success,
                 task_id=req.task_id,
                 schedule_id=req.schedule_id,
                 data={
@@ -341,7 +350,8 @@ async def run_content_generation(req: ContentRequest) -> None:
 
         except Exception as exc:
             logger.exception("[%s] 작업 실패: %s", req.task_id, exc)
-            webhook_service.send_failure(
+            await run_in_threadpool(
+                webhook_service.send_failure,
                 task_id=req.task_id,
                 schedule_id=req.schedule_id,
                 error=str(exc),

@@ -103,7 +103,8 @@ async def generate_content(
 
     # --- 프롬프트 부가 정보 준비 ---
     # 날씨 조회는 실패해도 기본 문구로 대체되므로 여기서 미리 처리합니다.
-    weather_data = weather_service.build_weather_context(req.lat, req.lon)
+    # (requests 기반 동기 호출이라 스레드풀에서 실행해 이벤트 루프를 막지 않습니다)
+    weather_data = await run_in_threadpool(weather_service.build_weather_context, req.lat, req.lon)
     top_performers_context = _parse_top_performers(req.resolved_top_performers, task_id)
 
     # --- 백그라운드 작업 등록 후 즉시 202 반환 ---

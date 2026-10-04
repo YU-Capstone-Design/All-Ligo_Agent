@@ -33,6 +33,14 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    """환경 변수를 불리언으로 읽습니다. true/1/yes/on 만 참으로 봅니다."""
+    value = os.getenv(key)
+    if not value:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 class Settings:
     """
     서버 실행에 필요한 모든 설정값의 단일 소스(Single Source of Truth).
@@ -78,6 +86,13 @@ class Settings:
     OLLAMA_VISION_MODEL: str = _env_str("OLLAMA_VISION_MODEL", "llava:13b")
     OLLAMA_TEXT_TEMPERATURE: float = 0.7
     OLLAMA_VISION_TIMEOUT_SEC: int = _env_int("OLLAMA_VISION_TIMEOUT_SEC", 15)
+    # 텍스트 생성 타임아웃. 지정하지 않으면 Ollama가 멈췄을 때 작업이 영원히 끝나지 않습니다.
+    OLLAMA_TEXT_TIMEOUT_SEC: int = _env_int("OLLAMA_TEXT_TIMEOUT_SEC", 300)
+    # gemma4는 thinking(사고) 모드를 지원하며, 끄지 않으면 기본으로 켜집니다.
+    # 켜두면 응답이 약 2.5배 느려지고(실측 4초 → 10초) 가끔 사고가 길어져 수 분씩 걸립니다.
+    OLLAMA_TEXT_THINKING: bool = _env_bool("OLLAMA_TEXT_THINKING", False)
+    # 생성 토큰 상한. 실측 POST 약 300, VIDEO 약 180 토큰이므로 넉넉히 잡은 폭주 방지용 값입니다.
+    OLLAMA_TEXT_MAX_TOKENS: int = _env_int("OLLAMA_TEXT_MAX_TOKENS", 2048)
 
     # ------------------------------------------------------------------
     # 동시 작업 / 리소스 임계값
