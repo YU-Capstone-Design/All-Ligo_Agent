@@ -74,6 +74,10 @@ class Settings:
         "SPRING_WEBHOOK_URL",
         "http://localhost:8080/api/internal/content-callback",
     )
+    # 이 서버의 공개 주소(예: https://<AGENT_HOST>). posterUrl 같은 정적 파일 URL 을 만들 때 씁니다.
+    # 비워 두면 요청이 들어온 주소를 그대로 쓰는데, 그러면 Was 가 어떤 주소(http/https)로
+    # 불렀는지에 따라 썸네일 주소가 달라집니다.
+    AGENT_PUBLIC_BASE_URL: str = _env_str("AGENT_PUBLIC_BASE_URL", "").rstrip("/")
     WEBHOOK_TIMEOUT_SEC: int = _env_int("WEBHOOK_TIMEOUT_SEC", 5)
     # 연결 오류·타임아웃·5xx 일 때 총 시도 횟수 (1 이면 재시도 안 함). 최악의 경우 약 22초 소요.
     WEBHOOK_MAX_ATTEMPTS: int = _env_int("WEBHOOK_MAX_ATTEMPTS", 3)

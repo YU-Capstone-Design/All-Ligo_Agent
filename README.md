@@ -153,6 +153,7 @@ AWS_REGION=ap-northeast-2
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
+| `AGENT_PUBLIC_BASE_URL` | (빈 값) | 이 서버의 공개 주소. 설정하면 posterUrl 을 이 주소 기준으로 만든다(비우면 요청 주소 기준) |
 | `WEBHOOK_MAX_ATTEMPTS` | `3` | 웹훅 일시 실패(연결 오류·5xx) 시 총 시도 횟수 |
 | `OLLAMA_TEXT_TIMEOUT_SEC` | `300` | 텍스트 생성 타임아웃 |
 | `OLLAMA_TEXT_THINKING` | `false` | gemma4 사고 모드. 켜면 약 2.5배 느려지고 가끔 수 분씩 걸림 |

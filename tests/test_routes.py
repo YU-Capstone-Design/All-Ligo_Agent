@@ -49,6 +49,24 @@ def no_background_job(monkeypatch):
     return calls
 
 
+def test_공개_주소가_설정되면_posterUrl_기준으로_쓴다(client, isolated_static, no_background_job, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "AGENT_PUBLIC_BASE_URL", "https://agent.example")
+
+    client.post("/api/marketing/generate", json={"contentType": "POST"})
+
+    assert no_background_job[0].base_url == "https://agent.example"
+
+
+def test_공개_주소가_없으면_요청_주소를_쓴다(client, isolated_static, no_background_job, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "AGENT_PUBLIC_BASE_URL", "")
+
+    client.post("/api/marketing/generate", json={"contentType": "POST"})
+
+    assert no_background_job[0].base_url == "http://testserver"
+
+
 def test_generate_는_즉시_202와_taskId를_반환한다(client, isolated_static, no_background_job):
     res = client.post("/api/marketing/generate", json={"contentType": "VIDEO", "mode": "TRANSFORM", "scheduleId": 7})
 

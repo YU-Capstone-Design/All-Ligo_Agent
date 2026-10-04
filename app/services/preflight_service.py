@@ -154,6 +154,12 @@ def _check_youtube() -> PreflightCheck:
         )
 
 
+def _check_public_url() -> PreflightCheck:
+    if settings.AGENT_PUBLIC_BASE_URL:
+        return _ok("공개 주소", f"{settings.AGENT_PUBLIC_BASE_URL} (posterUrl 기준)")
+    return _fail("공개 주소", WARNING, "AGENT_PUBLIC_BASE_URL 미설정 → posterUrl 이 Was 가 호출한 주소(http/https)를 따라감")
+
+
 def _check_webhook() -> PreflightCheck:
     # 실제 POST 는 하지 않습니다(Spring 에 빈 콜백이 쌓이므로). 설정값만 보여줍니다.
     return _ok("웹훅 대상", settings.SPRING_WEBHOOK_URL)
@@ -167,6 +173,7 @@ _CHECKS: List[Callable[[], object]] = [
     _check_assets,
     _check_s3,
     _check_youtube,
+    _check_public_url,
     _check_webhook,
 ]
 

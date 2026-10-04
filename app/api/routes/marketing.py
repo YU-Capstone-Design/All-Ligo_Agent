@@ -85,8 +85,9 @@ async def generate_content(
 ) -> JobAcceptedResponse:
     task_id = str(uuid.uuid4())
 
-    # 정적 파일 URL을 만들 때 쓸 서버 주소 (프록시 뒤에 있으면 프록시 주소가 잡힙니다)
-    base_url = str(request.base_url).rstrip("/")
+    # 정적 파일 URL(posterUrl)을 만들 때 쓸 서버 주소.
+    # 공개 주소가 설정되어 있으면 그것을, 없으면 요청이 들어온 주소를 씁니다.
+    base_url = settings.AGENT_PUBLIC_BASE_URL or str(request.base_url).rstrip("/")
 
     # --- 입력 이미지 준비 ---
     image_urls = req.resolved_image_urls
