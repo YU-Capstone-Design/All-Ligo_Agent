@@ -53,10 +53,18 @@ def needs_image_prompts(content_type: str, resolved_mode: str) -> bool:
 
 
 def build_vision_section(analysis_result: dict) -> str:
-    """업로드 이미지 분석(LLaVA) 결과를 프롬프트에 삽입할 블록으로 변환합니다."""
+    """
+    업로드 이미지 분석(LLaVA) 결과를 프롬프트에 삽입할 블록으로 변환합니다.
+
+    분석이 실패해 키워드가 하나도 없으면 빈 문자열을 반환합니다. 빈 칸만 있는 블록을
+    넣으면 LLM 이 "분석 결과를 바탕으로" 라는 지시를 따르려다 엉뚱한 내용을 지어냅니다.
+    """
     objects = ", ".join(analysis_result.get("objects", []))
     mood = ", ".join(analysis_result.get("mood", []))
     colors = ", ".join(analysis_result.get("colors", []))
+
+    if not (objects or mood or colors):
+        return ""
 
     return (
         f"\n[업로드 이미지 분석 결과]\n"
@@ -93,11 +101,28 @@ def format_top_performers(performers: List[dict]) -> str:
     """
     lines = []
     for i, performer in enumerate(performers, start=1):
+        # 형식이 어긋난 항목(문자열 등)은 건너뜁니다. 레퍼런스는 부가 정보일 뿐입니다.
+        if not isinstance(performer, dict):
+            continue
         click_count = performer.get("clickCount", 0)
         marketing_text = performer.get("marketingText", "")
-        tags = ", ".join(performer.get("tags", []))
+        raw_tags = performer.get("tags") or []
+        # tags 가 "카페" 처럼 문자열로 오면 join 이 글자 단위로 쪼개므로 리스트로 감쌉니다.
+        if isinstance(raw_tags, str):
+            raw_tags = [raw_tags]
+        tags = ", ".join(str(tag) for tag in raw_tags)
         lines.append(f"우수사례 {i} (클릭수: {click_count}) - 내용: {marketing_text} / 태그: {tags}")
     return "\n".join(lines)
+
+
+def _escape_braces(text: str) -> str:
+    """
+    외부 입력을 PromptTemplate 문자열에 직접 넣기 전에 중괄호를 이스케이프합니다.
+
+    과거 게시물 문구나 이미지 분석 결과에 "{1+1}" 같은 중괄호가 있으면
+    PromptTemplate 이 이를 템플릿 변수로 해석해 KeyError 로 작업 전체가 실패합니다.
+    """
+    return text.replace("{", "{{").replace("}", "}}")
 
 
 def build_marketing_prompt(
@@ -124,6 +149,10 @@ def build_marketing_prompt(
         _IMAGE_PROMPT_INSTRUCTION if wants_image_prompts else _NO_IMAGE_PROMPT_INSTRUCTION
     )
     content_instruction = _CONTENT_TYPE_INSTRUCTIONS.get(content_type, "")
+
+    # 아래 두 블록은 외부 입력(LLaVA 응답, Spring 이 넘긴 과거 게시물)이 섞여 있어 이스케이프합니다.
+    vision_section = _escape_braces(vision_section)
+    performers_section = _escape_braces(performers_section)
 
     prompt = f"""당신은 소상공인을 돕는 전문 마케터입니다. 아래 정보를 바탕으로 매력적인 홍보 텍스트를 작성하세요.
 {image_instruction}

@@ -43,6 +43,8 @@ logger = get_logger(__name__)
 
 # 한 번의 요청으로 만들어낼 최대 포스터 이미지 수
 _MAX_POSTER_IMAGES = 3
+# LLM 응답이 불완전할 때(빈 본문, 이미지 프롬프트 누락) 최대 생성 시도 횟수
+_MAX_TEXT_ATTEMPTS = 2
 
 
 @dataclass
@@ -206,6 +208,38 @@ async def _generate_marketing_text(
     )
 
 
+async def _generate_text_with_retry(
+    req: ContentRequest, resolved_mode: str, vision_section: str
+) -> str:
+    """
+    텍스트를 생성하고, 결과가 쓸 수 없는 형태면 한 번 더 생성합니다.
+
+    로컬 LLM은 가끔 빈 응답을 내거나, VIDEO+TRANSFORM 에서 [IMAGE_PROMPT] 줄을
+    빠뜨립니다. 후자는 포스터를 만들 수 없어 영상이 통째로 생략되므로 재시도합니다.
+    재시도 후에도 본문이 비어 있으면 예외를 던져 FAILED 로 처리합니다.
+    """
+    wants_image_prompts = marketing_prompts.needs_image_prompts(req.content_type, resolved_mode)
+
+    raw_text = ""
+    for attempt in range(1, _MAX_TEXT_ATTEMPTS + 1):
+        raw_text = await _generate_marketing_text(req, resolved_mode, vision_section)
+
+        has_body = bool(text_cleaner.clean_marketing_text(raw_text))
+        has_prompts = bool(text_cleaner.extract_image_prompts(raw_text)) or not wants_image_prompts
+        if has_body and has_prompts:
+            return raw_text
+
+        logger.warning(
+            "[%s] LLM 응답이 불완전합니다 (본문=%s, 이미지 프롬프트=%s). 시도 %d/%d",
+            req.task_id, has_body, has_prompts, attempt, _MAX_TEXT_ATTEMPTS,
+        )
+
+    if not text_cleaner.clean_marketing_text(raw_text):
+        raise RuntimeError("LLM이 빈 응답을 반환했습니다. Ollama 상태를 확인하세요.")
+    # 본문은 있으므로 이미지 없이라도 결과를 돌려줍니다.
+    return raw_text
+
+
 # ---------------------------------------------------------------------------
 # 3단계: 포스터 이미지 생성
 # ---------------------------------------------------------------------------
@@ -311,8 +345,8 @@ async def run_content_generation(req: ContentRequest) -> None:
             # 1. 업로드 이미지 분석 + 배치
             vision_section, assets = await _prepare_source_images(req, resolved_mode)
 
-            # 2. 마케팅 텍스트 생성
-            raw_text = await _generate_marketing_text(req, resolved_mode, vision_section)
+            # 2. 마케팅 텍스트 생성 (불완전한 응답이면 1회 재시도)
+            raw_text = await _generate_text_with_retry(req, resolved_mode, vision_section)
 
             # 3. 포스터 이미지 생성 (TRANSFORM + VIDEO 조합에서만)
             if marketing_prompts.needs_image_prompts(req.content_type, resolved_mode):
