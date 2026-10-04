@@ -1,9 +1,10 @@
 """시스템 모니터링(헬스 체크) 라우터."""
 
 from fastapi import APIRouter
+from fastapi.concurrency import run_in_threadpool
 
-from app.schemas.system import SystemStatusResponse
-from app.services import system_service
+from app.schemas.system import PreflightResponse, SystemStatusResponse
+from app.services import preflight_service, system_service
 
 router = APIRouter(tags=["🖥️ 시스템 모니터링"])
 
@@ -33,3 +34,29 @@ router = APIRouter(tags=["🖥️ 시스템 모니터링"])
 )
 async def get_system_status() -> SystemStatusResponse:
     return system_service.get_system_status()
+
+
+@router.get(
+    "/api/system/preflight",
+    response_model=PreflightResponse,
+    summary="기동 점검 (의존성·모델·토큰 상태)",
+    description="""
+콘텐츠 생성에 필요한 외부 요소가 준비되어 있는지 점검합니다. 서버 기동 시에도 한 번 실행되어 로그에 요약됩니다.
+
+| 항목 | 내용 |
+|------|------|
+| ffmpeg / ffprobe | 영상 생성 |
+| edge-tts | 나레이션 |
+| ollama | 서버 연결, 텍스트·비전 모델 설치 여부 |
+| 이미지 모델 | FLUX / SDXL 로컬 캐시 여부 |
+| 자막 폰트, BGM, 디스크 | 영상 품질 / 저장 공간 |
+| S3 | 버킷·자격 증명 설정 여부 (업로드 권한은 확인하지 않음) |
+| YouTube 토큰 | refresh token 유효성 (파일은 수정하지 않음) |
+
+`severity`: `ok` / `warning`(일부 기능 저하) / `error`(해당 기능 동작 불가).
+몇 초 걸릴 수 있습니다(Ollama, Google 토큰 서버 호출).
+""",
+)
+async def get_preflight() -> PreflightResponse:
+    # Ollama·Google 네트워크 호출이 있어 스레드풀에서 실행합니다.
+    return await run_in_threadpool(preflight_service.run_preflight)

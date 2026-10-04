@@ -14,6 +14,7 @@ FastAPI 애플리케이션 진입점.
     uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -22,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging_config import get_logger, setup_logging
+from app.services import preflight_service
 
 logger = get_logger(__name__)
 
@@ -92,6 +94,9 @@ async def lifespan(app: FastAPI):
     logger.info("웹훅 대상: %s", settings.SPRING_WEBHOOK_URL)
     logger.info("Ollama: %s (텍스트=%s, 비전=%s)",
                 settings.OLLAMA_BASE_URL, settings.OLLAMA_TEXT_MODEL, settings.OLLAMA_VISION_MODEL)
+
+    # 의존성 점검은 네트워크 호출이 있어 몇 초 걸리므로, 기동을 막지 않도록 백그라운드에서 돌립니다.
+    threading.Thread(target=preflight_service.log_preflight, name="preflight", daemon=True).start()
 
     yield
 

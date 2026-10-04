@@ -1,6 +1,6 @@
 """시스템 모니터링(GPU·디스크·동시 작업 수) 관련 응답 스키마."""
 
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -28,3 +28,19 @@ class SystemStatusResponse(BaseModel):
     diskSpaceFreeMb: float = Field(..., description="static/ 디렉토리가 위치한 파티션의 남은 디스크 공간 (MB 단위)", example=51200.50)
     gpu: Optional[GpuStatus] = Field(None, description="GPU 상태 정보. NVIDIA GPU가 없거나 nvidia-smi 실행 실패 시 null")
     timestamp: int = Field(..., description="상태 조회 시점의 Unix 타임스탬프 (초 단위)", example=1716134400)
+
+
+class PreflightCheck(BaseModel):
+    """기동 점검 항목 하나의 결과."""
+
+    name: str = Field(..., description="점검 항목 이름", example="ollama")
+    ok: bool = Field(..., description="정상 여부")
+    severity: str = Field(..., description="ok | warning(일부 기능 저하) | error(해당 기능 동작 불가)", example="ok")
+    detail: str = Field(..., description="상세 설명 또는 조치 방법")
+
+
+class PreflightResponse(BaseModel):
+    """기동 점검 전체 결과."""
+
+    ok: bool = Field(..., description="error 등급 항목이 하나도 없으면 true")
+    checks: List[PreflightCheck] = Field(..., description="항목별 점검 결과")
