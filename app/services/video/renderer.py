@@ -14,6 +14,7 @@ from typing import List, Optional, Tuple
 
 from app.core.config import settings
 from app.core.logging_config import get_logger
+from app.services import text_cleaner
 
 from . import audio, compositor
 from .constants import FPS
@@ -117,6 +118,9 @@ def create_shortform_video(
     """
     target_dir = Path(output_dir) if output_dir else settings.VIDEOS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
+
+    # 자막 폰트에 이모지 글리프가 없어 네모(□)로 찍히므로, 자막·나레이션에서는 이모지를 뺍니다.
+    marketing_text = text_cleaner.strip_emoji(marketing_text)
 
     # 중간 산출물(전처리 이미지, 세그먼트, 자막 프레임)을 담을 임시 폴더.
     # 작업마다 고유해야 합니다. 같은 이름을 쓰면 먼저 끝난 작업이 다른 작업의 폴더를 지워버립니다.

@@ -27,6 +27,20 @@ _TRAILING_META = re.compile(r"(?:마케팅\s*문구\s*:?)$", re.IGNORECASE)
 # 해시태그. 나레이션용 문장에는 '#'가 들어가면 안 됩니다.
 _HASHTAG = re.compile(r"#\S+")
 
+# 이모지와 그 부속 문자(변형 선택자, ZWJ, 피부색 등).
+# 자막 폰트(Pretendard/Noto CJK)에는 이모지 글리프가 없어 영상에 네모(□)로 찍힙니다.
+_EMOJI = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # 이모티콘, 그림 문자, 교통/지도, 보충 기호 등
+    "☀-➿"          # 기타 기호(☀☕), 딩뱃(✨✅)
+    "⬀-⯿"          # 별·화살표 기호(⭐)
+    "⌀-⏿"          # 기술 기호(⏰⌛)
+    "︀-️"          # 변형 선택자
+    "‍"                 # ZWJ (이모지 결합용)
+    "⃣"                 # 키캡 결합 문자
+    "]+"
+)
+
 
 def extract_image_prompts(raw_text: str, limit: int = 3) -> List[str]:
     """
@@ -59,3 +73,16 @@ def clean_marketing_text(raw_text: str) -> str:
     text = _TRAILING_META.sub("", text).strip()
     text = _HASHTAG.sub("", text).strip()
     return text.strip("'\" \n")
+
+
+def strip_emoji(text: str) -> str:
+    """
+    영상 자막·나레이션용으로 이모지를 제거합니다.
+
+    웹훅으로 나가는 generatedText 에는 이모지를 남겨둡니다(게시글/설명란 용도).
+    영상에 그려지는 자막만 폰트가 이모지를 지원하지 않아 네모로 깨지기 때문에 제거합니다.
+    """
+    text = _EMOJI.sub("", text)
+    # 이모지가 빠진 자리에 생긴 연속 공백을 하나로 줄입니다(줄바꿈은 유지).
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    return "\n".join(line.strip() for line in text.splitlines()).strip()
