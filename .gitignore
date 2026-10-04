@@ -10,3 +10,4 @@ token.json
 venv/
 .venv/
 .idea
+failed_webhooks/

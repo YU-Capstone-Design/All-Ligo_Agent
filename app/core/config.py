@@ -60,6 +60,8 @@ class Settings:
     UPLOADS_DIR: Path = STATIC_DIR / "uploads"    # 요청으로 받은 원본 이미지(작업 후 삭제)
     BGM_DIR: Path = STATIC_DIR / "bgm"            # 영상 배경음악(mp3) 후보
     FONT_DIR: Path = BASE_DIR / "fonts"           # 자막 렌더링용 폰트
+    # 전송에 실패한 웹훅 payload 보관 위치. /static 아래에 두면 외부에 공개되므로 루트에 둡니다.
+    FAILED_WEBHOOKS_DIR: Path = BASE_DIR / "failed_webhooks"
 
     # 서버 기동 시 미리 만들어 둘 디렉터리 목록
     RUNTIME_DIRS: tuple = (STATIC_DIR, IMAGES_DIR, VIDEOS_DIR, UPLOADS_DIR)
