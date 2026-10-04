@@ -95,6 +95,14 @@ class Settings:
     OLLAMA_TEXT_MAX_TOKENS: int = _env_int("OLLAMA_TEXT_MAX_TOKENS", 2048)
 
     # ------------------------------------------------------------------
+    # 이미지 생성 모델 (FLUX / SDXL)
+    # ------------------------------------------------------------------
+    # false(기본)면 로컬 Hugging Face 캐시에 있는 모델만 씁니다. 캐시에 없는 모델을
+    # 요청 처리 중에 내려받기 시작하면(FLUX 는 수십 GB) 작업이 한없이 늘어지기 때문입니다.
+    # 모델을 새로 받아야 할 때만 true 로 켜세요.
+    IMAGE_MODEL_ALLOW_DOWNLOAD: bool = _env_bool("IMAGE_MODEL_ALLOW_DOWNLOAD", False)
+
+    # ------------------------------------------------------------------
     # 동시 작업 / 리소스 임계값
     # ------------------------------------------------------------------
     MAX_CONCURRENT_JOBS: int = _env_int("MAX_CONCURRENT_JOBS", 2)

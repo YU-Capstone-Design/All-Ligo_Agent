@@ -257,10 +257,10 @@ async def _generate_poster_images(req: ContentRequest, raw_text: str, assets: _I
 
     logger.info("[%s] 로컬 SDXL/FLUX로 포스터 %d장 생성 중...", req.task_id, len(image_prompts))
     try:
-        for prompt in image_prompts:
-            filename = await run_in_threadpool(image_service.generate_image, prompt)
-            if filename:
-                assets.add(filename, req.base_url)
+        # 모델을 한 번만 올려 여러 장을 생성합니다. 일부만 성공하면 성공한 것만 돌아옵니다.
+        filenames = await run_in_threadpool(image_service.generate_images, image_prompts)
+        for filename in filenames:
+            assets.add(filename, req.base_url)
     except Exception as exc:
         logger.error("[%s] 이미지 생성 실패: %s", req.task_id, exc)
 
