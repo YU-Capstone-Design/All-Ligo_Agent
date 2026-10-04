@@ -1,6 +1,6 @@
 # 🚀 Marketing AI Agent (Python Backend)
 
-**로컬 AI 마케팅 에이전트** 프로젝트의 핵심 백엔드 서버(`py/`)입니다.
+**All-Ligo 로컬 AI 마케팅 에이전트**의 AI 생성 서버입니다. Spring 백엔드(`All-Ligo_Was`)의 요청을 받아 콘텐츠를 만들고 웹훅으로 결과를 돌려줍니다.
 
 이곳의 코드는 사용자의 요청을 받아 로컬 AI 모델을 호출하고, 그 결과(텍스트, 이미지, 영상)를 가공하여 API로 제공하는 역할을 담당합니다. FastAPI 프레임워크를 기반으로 제작되었습니다.
 
@@ -26,7 +26,7 @@
 │   │   └── routes/
 │   │       ├── marketing.py    # 콘텐츠 생성 + YouTube 업로드
 │   │       ├── weather.py      # 실시간 날씨 조회
-│   │       ├── system.py       # 헬스 체크 (GPU·디스크·작업 수)
+│   │       ├── system.py       # 헬스 체크 (GPU·디스크·작업 수) + 기동 점검
 │   │       ├── vision.py       # 이미지 분석
 │   │       └── home.py         # 접속 확인 페이지
 │   │
@@ -46,7 +46,8 @@
 │   │   ├── youtube_service.py  # YouTube 업로드
 │   │   ├── image_fetcher.py    # 요청 이미지 URL 병렬 다운로드
 │   │   ├── text_cleaner.py     # LLM 출력 후처리
-│   │   ├── webhook_service.py  # Spring 백엔드 결과 통보
+│   │   ├── webhook_service.py  # Spring 백엔드 결과 통보 (실패 시 failed_webhooks/ 에 보관)
+│   │   ├── preflight_service.py# 기동 점검 (의존성·모델 캐시·토큰)
 │   │   └── video/              # FFmpeg 숏폼 영상 생성 패키지
 │   │       ├── constants.py    # 해상도, Ken Burns 프리셋 등
 │   │       ├── ffmpeg_runner.py# FFmpeg 실행 + NVENC→CPU 폴백
@@ -65,9 +66,13 @@
 │   ├── refresh_youtube_token.py        # OAuth 토큰 발급 (브라우저 자동)
 │   └── refresh_youtube_token_manual.py # OAuth 토큰 발급 (URL 수동 입력)
 │
-└── tools/                      # 개발 중 손으로 돌려보는 점검 도구
-    ├── check_ollama.py
-    └── check_youtube_upload.py
+├── tools/                      # 개발 중 손으로 돌려보는 점검 도구
+│   ├── check_ollama.py
+│   ├── check_youtube_upload.py
+│   └── resend_failed_webhooks.py # 전송 실패한 웹훅 결과 재전송
+│
+├── tests/                      # pytest 스모크 테스트 (외부 서비스 없이 실행)
+└── docs/                       # 프로젝트 개요·작업 계획·현황
 ```
 
 ### 계층 규칙
@@ -144,6 +149,16 @@ AWS_S3_BUCKET=your-bucket-name
 AWS_REGION=ap-northeast-2
 ```
 
+안정성 관련 설정 (기본값 그대로 두는 것을 권장합니다)
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `OLLAMA_TEXT_TIMEOUT_SEC` | `300` | 텍스트 생성 타임아웃 |
+| `OLLAMA_TEXT_THINKING` | `false` | gemma4 사고 모드. 켜면 약 2.5배 느려지고 가끔 수 분씩 걸림 |
+| `OLLAMA_TEXT_MAX_TOKENS` | `2048` | 생성 토큰 상한 (폭주 방지) |
+| `OLLAMA_VISION_TIMEOUT_SEC` | `90` | 이미지 분석 타임아웃 (llava:13b 첫 로드에 30초 이상 걸림) |
+| `IMAGE_MODEL_ALLOW_DOWNLOAD` | `false` | `true` 면 캐시에 없는 FLUX/SDXL 을 요청 처리 중에 내려받음 |
+
 ### 5. 서버 실행
 
 ```bash
@@ -153,6 +168,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 기존 `uvicorn main:app` 명령도 그대로 동작합니다(루트 `main.py`가 앱을 재노출합니다).
 
 서버가 실행되면 `http://localhost:8000/docs` 에서 API 목록을 확인하고 직접 테스트할 수 있습니다.
+
+기동 직후 로그에 `===== 기동 점검 (preflight) =====` 요약이 찍힙니다. Ollama 모델, 이미지 모델 캐시, YouTube 토큰 등에 문제가 있으면 여기서 바로 보입니다. 같은 내용을 `GET /api/system/preflight` 로도 볼 수 있습니다.
+
+> 반드시 이 저장소 루트에서 실행하세요. 상위 폴더에서 실행하면 `Could not import module "main"` 오류가 납니다.
 
 ### 6. YouTube 업로드 설정 (선택)
 
@@ -176,6 +195,7 @@ python scripts/refresh_youtube_token_manual.py
 | `POST` | `/api/marketing/upload` | 생성된 영상을 YouTube에 업로드 |
 | `GET` | `/api/weather` | 좌표 기반 실시간 날씨 조회 |
 | `GET` | `/api/system/status` | 헬스 체크 (GPU·디스크·동시 작업 수) |
+| `GET` | `/api/system/preflight` | 기동 점검 (의존성·모델 캐시·토큰 상태) |
 | `POST` | `/api/vision/analyze` | 이미지 → 마케팅 키워드 추출 |
 | `GET` | `/` | 서버 접속 확인 페이지 |
 
@@ -185,10 +205,19 @@ python scripts/refresh_youtube_token_manual.py
   ```bash
   ollama pull gemma4:latest && ollama pull llava:13b
   ```
-- **Hugging Face 모델 캐시**: 이미지 생성 모델은 최초 실행 시 자동 다운로드됩니다. (`~/.cache/huggingface/`) 충분한 디스크 공간을 확보해주세요.
-- **GPU 사양**: 원활한 AI 모델 구동을 위해 **NVIDIA RTX 4080급(VRAM 16GB 이상) GPU**를 권장합니다. FLUX 로드에 실패하면 자동으로 SDXL로 폴백합니다.
+- **Hugging Face 모델 캐시**: 기본 설정에서는 `~/.cache/huggingface/` 에 **이미 있는** 모델만 사용합니다(요청 처리 중 수십 GB 다운로드 방지). FLUX 캐시가 없으면 SDXL 로 생성합니다. 모델을 새로 받으려면 `IMAGE_MODEL_ALLOW_DOWNLOAD=true` 로 한 번 실행하세요.
+- **GPU 사양**: VRAM 16GB 이상의 NVIDIA GPU를 권장합니다(현재 운영 머신: RTX 4090 24GB). 이미지 생성은 동시 작업이 있어도 한 번에 하나씩 GPU에 올립니다.
 - **FFmpeg NVENC**: GPU 인코딩을 지원하지 않는 FFmpeg 빌드에서는 자동으로 CPU(libx264) 인코딩으로 전환됩니다.
+
+## 🧪 테스트
+
+GPU·Ollama·S3·YouTube·Spring 없이 1~2초 안에 도는 스모크 테스트입니다.
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
 
 ---
 
-더 자세한 프로젝트의 비전, 전체 아키텍처, 향후 계획 등은 [상위 README.md](../README.md)를 참고해주세요.
+시스템 내 위치, 웹훅 payload 형식, 알려진 한계는 [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md)를 참고하세요.
