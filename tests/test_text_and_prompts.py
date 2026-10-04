@@ -56,3 +56,12 @@ def test_이미지_프롬프트_추출과_본문_정리():
 
 def test_자막용_이모지_제거():
     assert text_cleaner.strip_emoji("충전! ✨ 오늘 ☕️ 한잔 👨‍👩‍👧\n둘째 🍂") == "충전! 오늘 한잔\n둘째"
+
+
+def test_Was가_보내는_영문_요일을_한글로_바꾼다():
+    from app.schemas.content import GenerateRequestDto
+
+    assert GenerateRequestDto(uploadDay="FRIDAY").resolved_upload_day == "금요일"
+    assert GenerateRequestDto(upload_day="monday").resolved_upload_day == "월요일"
+    assert GenerateRequestDto(uploadDay="토요일").resolved_upload_day == "토요일"
+    assert GenerateRequestDto().resolved_upload_day == "월요일"

@@ -4,6 +4,12 @@ from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field
 
+# Was 가 보내는 영문 요일 → 프롬프트용 한글 요일
+_KOREAN_WEEKDAYS = {
+    "MONDAY": "월요일", "TUESDAY": "화요일", "WEDNESDAY": "수요일", "THURSDAY": "목요일",
+    "FRIDAY": "금요일", "SATURDAY": "토요일", "SUNDAY": "일요일",
+}
+
 
 class JobAcceptedResponse(BaseModel):
     """비동기 작업이 수락되었을 때 반환되는 응답 모델입니다. 클라이언트는 이 taskId로 웹훅 결과를 매칭합니다."""
@@ -101,7 +107,13 @@ class GenerateRequestDto(BaseModel):
 
     @property
     def resolved_upload_day(self) -> str:
-        return self.uploadDay or self.upload_day or "월요일"
+        """
+        업로드 요일. Was 는 스케줄의 요일을 `MONDAY` 같은 영문으로 보내는데,
+        한국어 프롬프트에 영문 요일이 섞이면 문구가 어색해져 한글로 바꿉니다.
+        목록에 없는 값(이미 한글인 경우 등)은 그대로 둡니다.
+        """
+        day = self.uploadDay or self.upload_day or "월요일"
+        return _KOREAN_WEEKDAYS.get(day.strip().upper(), day)
 
     @property
     def resolved_upload_time(self) -> str:
