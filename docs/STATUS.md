@@ -77,6 +77,7 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 - 2026-10-04 밤: 사용자 결정 반영. Agent 커밋 4개(`536fe87` 웹훅 자동 재시도, `2bdabf2` VIDEO 영상 없음 처리, `97c12a8` S3 재시도, `29fa5cb` 영문 요일 한글화), pytest 33개. Was 형태 그대로의 요청으로 E2E 확인(39초 SUCCESS). 운영 서버 19:20 재기동. 회의 안건 재작성, `was_todo_docs/` 생성(git 제외).
 - 2026-10-04 심야: Was 세션 질문(Q1~Q7) 대응. Agent 커밋 3개(`6d3de21` 웹훅 성공 판정 2xx 한정, `91513b6` YouTube 중복 업로드 방지, `75a8aba` posterUrl 공개 주소 고정 — `.env` 에 `AGENT_PUBLIC_BASE_URL` 추가). pytest 39개. 운영 서버 재기동. Was 쪽 W1·W5·W6 수정 완료(배포 대기) 문서 반영, `was_todo_docs` T1~T4 완료 표시·T6/T7 추가.
 - 2026-10-04 21:22: **YouTube 토큰 재발급 완료**(팀장 로그인, 수동 스크립트 버그 `65ea865` 수정 후). 발급 응답에 만료 기한이 와서 **동의 화면이 '테스트' 상태임을 확인 → 7일짜리 토큰, 2026-10-11 21:22 만료.** 21:23:12 운영 `/api/marketing/upload` 로 unlisted 테스트 영상 1건 업로드 성공(3초), 같은 영상 재요청 시 기존 URL 반환(멱등) 확인. 테스트 영상은 팀장이 YouTube Studio 에서 삭제 필요(업로드 권한으로는 삭제 불가). `cac9778` 만료 사전 감지 추가, `client_secret.json`·`token.json` 권한 600.
+- 2026-10-04 심야: 동의 화면 프로덕션 게시에 필요한 항목(앱 이름·지원 이메일·홈페이지·개인정보처리방침) 대응. `1bbd50c` `/privacy` 페이지·홈 정비·토큰 `--force` 재발급. 홈페이지 `https://<AGENT_HOST>/`, 개인정보처리방침 `https://<AGENT_HOST>/privacy` 로 등록 안내. 팀장이 게시 후 `--force` 재발급 대기(tmux `yt-token`).
 
 ## 10/4 밤 사용자 결정
 
