@@ -7,7 +7,8 @@ YouTube OAuth 토큰 발급 스크립트 (수동 URL 붙여넣기 방식).
 브라우저를 열 수 있는 로컬 환경이라면 `refresh_youtube_token.py` 가 더 편합니다.
 
 실행:
-    python scripts/refresh_youtube_token_manual.py
+    python scripts/refresh_youtube_token_manual.py           # 토큰이 죽었을 때만 재발급
+    python scripts/refresh_youtube_token_manual.py --force   # 살아 있어도 새로 재발급
 """
 
 import json
@@ -131,8 +132,14 @@ def _save_token_meta(token_response: dict) -> None:
 def main() -> None:
     print("=== YouTube OAuth 토큰 갱신 도구 (수동 모드) ===")
 
+    # --force: 지금 토큰이 살아 있어도 새로 동의를 받아 재발급합니다.
+    # (예: OAuth 동의 화면을 '프로덕션'으로 바꾼 뒤 7일짜리 토큰을 기한 없는 토큰으로 바꿀 때)
+    force = "--force" in sys.argv[1:]
+
     creds = None
-    if TOKEN_FILE.exists():
+    if force:
+        print("--force: 기존 토큰을 무시하고 새로 인증합니다.")
+    elif TOKEN_FILE.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
             print(f"기존 토큰 파일을 찾았습니다: {TOKEN_FILE}")

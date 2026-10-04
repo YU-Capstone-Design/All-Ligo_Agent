@@ -78,6 +78,8 @@ class Settings:
     # 비워 두면 요청이 들어온 주소를 그대로 쓰는데, 그러면 Was 가 어떤 주소(http/https)로
     # 불렀는지에 따라 썸네일 주소가 달라집니다.
     AGENT_PUBLIC_BASE_URL: str = _env_str("AGENT_PUBLIC_BASE_URL", "").rstrip("/")
+    # 개인정보처리방침(/privacy) 에 표시할 문의 이메일. 비우면 안내 문구만 표시합니다.
+    AGENT_CONTACT_EMAIL: str = _env_str("AGENT_CONTACT_EMAIL", "")
     WEBHOOK_TIMEOUT_SEC: int = _env_int("WEBHOOK_TIMEOUT_SEC", 5)
     # 연결 오류·타임아웃·5xx 일 때 총 시도 횟수 (1 이면 재시도 안 함). 최악의 경우 약 22초 소요.
     WEBHOOK_MAX_ATTEMPTS: int = _env_int("WEBHOOK_MAX_ATTEMPTS", 3)

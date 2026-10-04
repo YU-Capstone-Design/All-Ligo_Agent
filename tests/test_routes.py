@@ -162,3 +162,19 @@ def test_upload_같은_영상을_다시_요청하면_다시_올리지_않고_기
     assert first.status_code == second.status_code == 200
     assert first.json()["youtubeUrl"] == second.json()["youtubeUrl"]
     assert len(fake_youtube) == 1
+
+
+def test_개인정보처리방침_페이지(client, monkeypatch):
+    from app.api.routes import home
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AGENT_CONTACT_EMAIL", "team@example.com")
+    home._load_privacy_html.cache_clear()
+
+    res = client.get("/privacy")
+
+    assert res.status_code == 200
+    assert "youtube.upload" in res.text
+    assert "mailto:team@example.com" in res.text
+    assert "{{CONTACT}}" not in res.text
+    home._load_privacy_html.cache_clear()
