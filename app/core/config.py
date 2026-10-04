@@ -135,6 +135,11 @@ class Settings:
     YOUTUBE_SCOPES: tuple = ("https://www.googleapis.com/auth/youtube.upload",)
     YOUTUBE_CLIENT_SECRET_FILE: Path = BASE_DIR / "client_secret.json"
     YOUTUBE_TOKEN_FILE: Path = BASE_DIR / "token.json"
+    # 토큰 발급 시각과 refresh token 만료 시각(동의 화면이 "테스트" 상태일 때만 존재) 기록
+    YOUTUBE_TOKEN_META_FILE: Path = BASE_DIR / "youtube_token_meta.json"
+    # YouTube 토큰을 주기적으로 점검하는 간격(시간). 0 이면 끔.
+    # 점검 자체가 refresh token 을 쓰므로 "6개월 미사용 만료" 도 함께 막아 줍니다.
+    YOUTUBE_TOKEN_CHECK_HOURS: int = _env_int("YOUTUBE_TOKEN_CHECK_HOURS", 6)
     # 업로드 완료 기록(영상 경로 → YouTube URL). 같은 영상 재요청 시 중복 업로드를 막는 데 씁니다.
     YOUTUBE_UPLOADS_FILE: Path = BASE_DIR / "youtube_uploads.json"
 

@@ -239,3 +239,26 @@ def test_기동_점검은_개별_항목이_예외를_던져도_결과를_돌려�
 
     assert [c.ok for c in report.checks] == [False, True]
     assert report.ok   # 경고(warning)만 있으면 전체는 ok
+
+
+@pytest.mark.parametrize("expires_at, expected", [
+    (None, None),                                   # 프로덕션 토큰: 만료 기한 없음
+    ("2026-10-10T12:00:00", "warning"),             # 테스트 상태 토큰: 남아 있어도 경고
+    ("2026-10-01T12:00:00", "error"),               # 이미 만료
+])
+def test_YouTube_토큰_만료_기록에_따라_경고한다(isolated_static, expires_at, expected):
+    from datetime import datetime
+
+    from app.core.config import settings
+
+    settings.YOUTUBE_TOKEN_META_FILE.write_text(
+        json.dumps({"issuedAt": "2026-10-04T12:00:00", "refreshTokenExpiresAt": expires_at})
+    )
+
+    note = preflight_service.youtube_expiry_note(now=datetime(2026, 10, 5))
+
+    assert (note[0] if note else None) == expected
+
+
+def test_YouTube_토큰_발급_기록이_없으면_경고하지_않는다(isolated_static):
+    assert preflight_service.youtube_expiry_note() is None

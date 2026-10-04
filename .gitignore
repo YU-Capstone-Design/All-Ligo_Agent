@@ -13,3 +13,4 @@ venv/
 failed_webhooks/
 was_todo_docs/
 youtube_uploads.json
+youtube_token_meta.json

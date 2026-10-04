@@ -11,9 +11,13 @@
 """
 
 import importlib.util
+import json
 import shutil
+import threading
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Optional, Tuple
 
 import requests
 
@@ -130,6 +134,31 @@ def _check_s3() -> PreflightCheck:
     return _ok("S3", "버킷 설정됨, 자격 증명 있음 (업로드 권한은 미확인)")
 
 
+def youtube_expiry_note(now: Optional[datetime] = None) -> Optional[Tuple[str, str]]:
+    """
+    토큰 발급 기록에 refresh token 만료 시각이 있으면 (등급, 설명) 을 반환합니다. 없으면 None.
+
+    만료 시각이 기록돼 있다는 것은 OAuth 동의 화면이 "테스트" 상태라 7일짜리 토큰이
+    발급됐다는 뜻이므로, 기한이 남아 있어도 경고로 알립니다.
+    """
+    try:
+        meta = json.loads(settings.YOUTUBE_TOKEN_META_FILE.read_text())
+    except Exception:
+        return None
+    expires_at = meta.get("refreshTokenExpiresAt")
+    if not expires_at:
+        return None
+
+    remaining = datetime.fromisoformat(expires_at) - (now or datetime.now())
+    if remaining.total_seconds() <= 0:
+        return ERROR, f"refresh token 만료됨({expires_at}) → 재발급 필요"
+    days = remaining.total_seconds() / 86400
+    return WARNING, (
+        f"refresh token 이 {days:.1f}일 뒤 만료({expires_at}). "
+        "동의 화면이 '테스트' 상태 → '프로덕션' 게시 후 재발급 필요"
+    )
+
+
 def _check_youtube() -> PreflightCheck:
     token_file = settings.YOUTUBE_TOKEN_FILE
     if not token_file.exists():
@@ -140,18 +169,21 @@ def _check_youtube() -> PreflightCheck:
 
     try:
         creds = Credentials.from_authorized_user_file(str(token_file), list(settings.YOUTUBE_SCOPES))
-        if creds.valid:
-            return _ok("YouTube 토큰", "유효")
         if not creds.refresh_token:
             return _fail("YouTube 토큰", WARNING, "refresh_token 없음 → 재발급 필요")
         # 메모리 안에서만 갱신을 시도합니다. 파일에는 쓰지 않습니다.
+        # (access token 이 아직 유효해도 refresh token 이 살아 있는지 보려고 항상 갱신해 봅니다)
         creds.refresh(Request())
-        return _ok("YouTube 토큰", "refresh_token 유효")
     except Exception as exc:
         return _fail(
             "YouTube 토큰", WARNING,
-            f"갱신 실패({exc.__class__.__name__}) → python scripts/refresh_youtube_token.py 로 재발급 필요",
+            f"갱신 실패({exc.__class__.__name__}) → python scripts/refresh_youtube_token_manual.py 로 재발급 필요",
         )
+
+    note = youtube_expiry_note()
+    if note:
+        return _fail("YouTube 토큰", note[0], note[1])
+    return _ok("YouTube 토큰", "refresh_token 유효")
 
 
 def _check_public_url() -> PreflightCheck:
@@ -206,3 +238,35 @@ def log_preflight() -> None:
         else:
             logger.warning("  [주의] %s: %s", check.name, check.detail)
     logger.info("===== 점검 결과: %s =====", "정상" if report.ok else "오류 있음 — 위 항목 확인")
+
+
+def _youtube_check_loop(interval_sec: float) -> None:
+    while True:
+        time.sleep(interval_sec)
+        try:
+            check = _check_youtube()
+        except Exception as exc:  # 점검 스레드가 죽지 않도록
+            logger.error("YouTube 토큰 주기 점검 중 오류: %s", exc)
+            continue
+        if check.ok:
+            logger.info("YouTube 토큰 주기 점검: %s", check.detail)
+        elif check.severity == ERROR:
+            logger.error("YouTube 토큰 주기 점검: %s", check.detail)
+        else:
+            logger.warning("YouTube 토큰 주기 점검: %s", check.detail)
+
+
+def start_youtube_token_monitor() -> None:
+    """
+    YouTube 토큰을 주기적으로 점검하는 백그라운드 스레드를 띄웁니다.
+
+    토큰이 죽어도 업로드 요청이 오기 전까지는 아무도 모르기 때문에, 주기적으로 갱신을
+    시도해 로그로 알립니다. 갱신 시도 자체가 refresh token 사용으로 잡혀
+    "6개월 미사용 만료" 도 막아 줍니다.
+    """
+    hours = settings.YOUTUBE_TOKEN_CHECK_HOURS
+    if hours <= 0 or not settings.YOUTUBE_TOKEN_FILE.exists():
+        return
+    threading.Thread(
+        target=_youtube_check_loop, args=(hours * 3600,), name="youtube-token-monitor", daemon=True
+    ).start()

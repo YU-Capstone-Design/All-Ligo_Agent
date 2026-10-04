@@ -10,7 +10,10 @@ YouTube OAuth 토큰 발급 스크립트 (수동 URL 붙여넣기 방식).
     python scripts/refresh_youtube_token_manual.py
 """
 
+import json
+import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # 프로젝트 루트를 import 경로에 추가해 app 패키지를 불러올 수 있게 합니다.
@@ -25,6 +28,7 @@ from app.core.config import settings
 SCOPES = list(settings.YOUTUBE_SCOPES)
 TOKEN_FILE = settings.YOUTUBE_TOKEN_FILE
 CLIENT_SECRET_FILE = settings.YOUTUBE_CLIENT_SECRET_FILE
+META_FILE = settings.YOUTUBE_TOKEN_META_FILE
 
 # 실제로 서버를 띄우지는 않고, 리다이렉트 주소만 이 값으로 고정합니다.
 _REDIRECT_URI = "http://localhost:8989"
@@ -51,11 +55,35 @@ def _run_manual_flow() -> Credentials | None:
 
     # 3) URL의 code 파라미터로 토큰 교환
     try:
-        flow.fetch_token(authorization_response=redirect_response)
-        return flow.credentials
+        token_response = flow.fetch_token(authorization_response=redirect_response)
     except Exception as exc:
         print(f"인증 처리 중 오류 발생: {exc}")
         return None
+
+    _save_token_meta(token_response)
+    return flow.credentials
+
+
+def _save_token_meta(token_response: dict) -> None:
+    """
+    발급 시각과 refresh token 만료 시각을 기록합니다. (토큰 값은 기록하지 않음)
+
+    Google 은 OAuth 동의 화면이 "테스트" 상태면 7일짜리 refresh token 을 주고,
+    이때 응답에 남은 수명(refresh_token_expires_in)을 함께 보냅니다.
+    서버의 기동 점검이 이 기록을 보고 만료 임박을 경고합니다.
+    """
+    now = datetime.now()
+    expires_in = token_response.get("refresh_token_expires_in")
+    expires_at = (now + timedelta(seconds=int(expires_in))).isoformat(timespec="seconds") if expires_in else None
+
+    META_FILE.write_text(json.dumps(
+        {"issuedAt": now.isoformat(timespec="seconds"), "refreshTokenExpiresAt": expires_at}, indent=2
+    ))
+    if expires_at:
+        print(f"\n⚠️  이 refresh token 은 {expires_at} 에 만료됩니다 (약 {int(expires_in) // 86400}일).")
+        print("   OAuth 동의 화면이 '테스트' 상태로 보입니다. '프로덕션'으로 게시한 뒤 다시 발급하세요.")
+    else:
+        print("\n✅ 만료 기한이 없는 refresh token 입니다 (동의 화면 '프로덕션' 상태).")
 
 
 def main() -> None:
@@ -94,6 +122,7 @@ def main() -> None:
             return
 
     TOKEN_FILE.write_text(creds.to_json())
+    os.chmod(TOKEN_FILE, 0o600)  # 토큰 파일은 소유자만 읽도록
     print(f"\n🎉 토큰을 저장했습니다: {TOKEN_FILE}")
 
 

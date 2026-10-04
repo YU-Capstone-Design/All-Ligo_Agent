@@ -97,6 +97,8 @@ async def lifespan(app: FastAPI):
 
     # 의존성 점검은 네트워크 호출이 있어 몇 초 걸리므로, 기동을 막지 않도록 백그라운드에서 돌립니다.
     threading.Thread(target=preflight_service.log_preflight, name="preflight", daemon=True).start()
+    # YouTube 토큰은 업로드 요청이 와야 죽은 걸 알 수 있으므로 주기적으로 점검합니다.
+    preflight_service.start_youtube_token_monitor()
 
     yield
 
