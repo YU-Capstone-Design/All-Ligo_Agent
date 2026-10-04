@@ -12,7 +12,8 @@ torch / diffusers 는 임포트 비용이 큰 무거운 패키지입니다. 서�
 """
 
 import gc
-import time
+import random
+import uuid
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -118,8 +119,8 @@ def generate_image(
     try:
         pipe, model_type = _load_pipeline()
 
-        # 매 호출마다 다른 결과를 얻기 위해 현재 시각 기반 시드를 사용합니다.
-        generator = torch.Generator(device="cpu").manual_seed(int(time.time()) % 2**32)
+        # 매 호출마다 다른 결과를 얻기 위해 무작위 시드를 사용합니다.
+        generator = torch.Generator(device="cpu").manual_seed(random.randrange(2**32))
         enhanced_prompt = f"{prompt}, {_QUALITY_BOOSTER}"
 
         if model_type == "flux":
@@ -159,7 +160,8 @@ def generate_image(
                 generator=generator,
             )
 
-        filename = f"poster_{int(time.time())}.png"
+        # 초 단위 시각만 쓰면 동시에 돌던 작업끼리 같은 파일명을 덮어쓸 수 있어 uuid를 씁니다.
+        filename = f"poster_{uuid.uuid4().hex}.png"
         filepath = target_dir / filename
         result.images[0].save(filepath, "PNG")
 

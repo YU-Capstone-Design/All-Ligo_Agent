@@ -7,7 +7,7 @@
 """
 
 import shutil
-import time
+import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -111,8 +111,10 @@ def create_shortform_video(
     target_dir = Path(output_dir) if output_dir else settings.VIDEOS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 중간 산출물(전처리 이미지, 세그먼트, 자막 프레임)을 담을 임시 폴더
-    temp_dir = target_dir / f"_tmp_{int(time.time())}"
+    # 중간 산출물(전처리 이미지, 세그먼트, 자막 프레임)을 담을 임시 폴더.
+    # 작업마다 고유해야 합니다. 같은 이름을 쓰면 먼저 끝난 작업이 다른 작업의 폴더를 지워버립니다.
+    job_id = uuid.uuid4().hex
+    temp_dir = target_dir / f"_tmp_{job_id}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     num_images = len(image_paths)
@@ -175,7 +177,7 @@ def create_shortform_video(
             logger.info("자막 타이핑 시퀀스 생성 완료.")
 
         # --- 8. 최종 합성 ---
-        filename = f"shortform_{int(time.time())}.mp4"
+        filename = f"shortform_{job_id}.mp4"
         final_path = target_dir / filename
 
         compositor.composite_final(
