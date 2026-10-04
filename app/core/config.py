@@ -85,7 +85,10 @@ class Settings:
     OLLAMA_TEXT_MODEL: str = _env_str("OLLAMA_TEXT_MODEL", "gemma4:latest")
     OLLAMA_VISION_MODEL: str = _env_str("OLLAMA_VISION_MODEL", "llava:13b")
     OLLAMA_TEXT_TEMPERATURE: float = 0.7
-    OLLAMA_VISION_TIMEOUT_SEC: int = _env_int("OLLAMA_VISION_TIMEOUT_SEC", 15)
+    # 이미지 분석 타임아웃. keep_alive=0 이라 매번 모델을 새로 올리는데, llava:13b 는
+    # 디스크에서 처음 올릴 때 로드만 30초 넘게 걸립니다(실측 총 39초, 캐시된 뒤에는 2초).
+    # 15초로 두면 첫 분석이 항상 실패하므로 여유 있게 잡습니다.
+    OLLAMA_VISION_TIMEOUT_SEC: int = _env_int("OLLAMA_VISION_TIMEOUT_SEC", 90)
     # 텍스트 생성 타임아웃. 지정하지 않으면 Ollama가 멈췄을 때 작업이 영원히 끝나지 않습니다.
     OLLAMA_TEXT_TIMEOUT_SEC: int = _env_int("OLLAMA_TEXT_TIMEOUT_SEC", 300)
     # gemma4는 thinking(사고) 모드를 지원하며, 끄지 않으면 기본으로 켜집니다.

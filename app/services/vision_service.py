@@ -77,9 +77,14 @@ def _parse_analysis_text(result_text: str) -> dict:
     analysis: dict = {"objects": [], "mood": [], "colors": []}
 
     for line in result_text.split("\n"):
+        # LLaVA 는 첫 줄을 공백으로 시작하거나("  Objects: ..."), 마크다운 기호
+        # ("**Objects:**", "- Objects:")를 붙이곤 합니다. 그대로 비교하면 매칭에 실패해
+        # 해당 항목이 통째로 빠지므로, 앞뒤 기호를 걷어내고 대소문자 무시로 비교합니다.
+        normalized = line.strip().lstrip("-*• ").replace("**", "")
         for prefix, key in _RESULT_PREFIXES.items():
-            if line.startswith(prefix):
-                analysis[key] = [x.strip() for x in line.replace(prefix, "").split(",")]
+            if normalized.lower().startswith(prefix.lower()):
+                values = normalized[len(prefix):].split(",")
+                analysis[key] = [v.strip() for v in values if v.strip()]
                 break
 
     return analysis
