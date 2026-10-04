@@ -153,6 +153,7 @@ AWS_REGION=ap-northeast-2
 
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
+| `WEBHOOK_MAX_ATTEMPTS` | `3` | 웹훅 일시 실패(연결 오류·5xx) 시 총 시도 횟수 |
 | `OLLAMA_TEXT_TIMEOUT_SEC` | `300` | 텍스트 생성 타임아웃 |
 | `OLLAMA_TEXT_THINKING` | `false` | gemma4 사고 모드. 켜면 약 2.5배 느려지고 가끔 수 분씩 걸림 |
 | `OLLAMA_TEXT_MAX_TOKENS` | `2048` | 생성 토큰 상한 (폭주 방지) |

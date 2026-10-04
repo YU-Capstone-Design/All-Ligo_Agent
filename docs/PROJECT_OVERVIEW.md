@@ -122,7 +122,8 @@ camelCase·snake_case를 **둘 다 받는다**(camelCase 우선). 주요 필드:
 | POST | TRANSFORM / AUTO(이미지 없음) | 3문단+, 이모지 | **없음** (`posterUrl=null`) | — |
 | VIDEO | ORIGINAL / AUTO(이미지 있음) | 50자 이내 1~2문장 | 업로드 이미지 **전부** 사용 | 생성 |
 | VIDEO | TRANSFORM / AUTO(이미지 없음) | 50자 이내 + 영어 프롬프트 3개 | AI 3장 생성 (업로드는 분석에만 사용) | 생성 |
-| VIDEO | ORIGINAL + 이미지 없음 | 생성 | 없음 | **건너뜀** (`SUCCESS`인데 영상 필드 `null`) |
+| VIDEO | ORIGINAL + 이미지 없음 | 생성 | 없음 | ~~건너뜀(`SUCCESS`인데 영상 `null`)~~ → 10/4 `2bdabf2` 부터 **`FAILED`** |
+| VIDEO | TRANSFORM, AI 이미지 생성 실패 | 생성 | 업로드 사진으로 대체 | 생성 (사진도 없으면 `FAILED`) — 10/4 `2bdabf2` |
 
 ### 영상 렌더링 (`services/video/`)
 
@@ -184,8 +185,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 # 반드시 이 저장소 루트
 4. (일부 해결 `eb6634d`: 이미지 생성 구간은 GPU 잠금으로 직렬화 → OOM 방지. 요청 거절/큐잉 정책은 Spring 합의 필요) **동시 작업 제한은 권고일 뿐** — `generate`는 `busy`여도 거절하지 않는다. `job_tracker`는 카운트만 하고, 호출자(Spring)가 `/api/system/status`를 먼저 확인해야 한다.
 5. ✅ (`eb6634d` 작업당 1회 로드, 캐시 전용) **이미지 모델을 장마다 로드/해제** — `generate_image()`가 호출될 때마다 FLUX를 로드하고 끝나면 해제(VRAM 0 보장 목적). `VIDEO+TRANSFORM`은 3번 반복되어 느리다. (코드 구조상의 추정이며 실제 소요 시간은 측정하지 않았다.)
 5-1. ✅ (`f416a89` uuid) 파일명이 `int(time.time())` 기반(`poster_*`, `shortform_*`, `_tmp_*`)이라 **같은 초에 시작한 동시 작업끼리 충돌**할 수 있다.
-6. (일부 해결 `5e501fd`: 2xx 확인 + 실패 payload 보관 + `tools/resend_failed_webhooks.py`. 자동 재시도는 Spring 중복 처리 합의 필요) **웹훅은 1회 시도, 재시도 없음** — 실패 시 로그만 남기므로 Spring이 못 받으면 결과를 잃는다. (영상은 디스크에 남음)
-7. **웹훅의 `mode`는 요청 원본 값**(`AUTO` 포함)이다. 스키마 설명의 "TRANSFORM 또는 ORIGINAL"과 다르다.
+6. ✅ (`5e501fd` 2xx 확인 + 실패 보관 + 재전송 도구, `536fe87` 자동 재시도) **웹훅은 1회 시도, 재시도 없음** — 실패 시 로그만 남기므로 Spring이 못 받으면 결과를 잃는다. (영상은 디스크에 남음)
+7. (안건 삭제 — Was 가 `mode` 를 쓰지 않음, `WAS_INTEGRATION.md`) **웹훅의 `mode`는 요청 원본 값**(`AUTO` 포함)이다. 스키마 설명의 "TRANSFORM 또는 ORIGINAL"과 다르다.
 8. ✅ (`9af89ca` pytest 스모크 24개) **테스트 코드 없음.** `tools/`는 수동 점검 스크립트다.
 9. ✅ (README 갱신) **README 일부가 낡음** — Agent `README.md`는 "RTX 4080"을 전제하고 헤더에 `py/`로 적혀 있다. 최상위 `README.md`는 구버전(§`WORKSPACE.md`).
 

@@ -27,7 +27,7 @@
 | Cloudflare 터널 | `cloudflared.service` (systemd, 토큰 방식, 재부팅 시 자동 시작). 라우팅은 대시보드에 있음. 로컬 조회: `curl localhost:20241/config` |
 | 터널 라우팅 | `<AGENT_HOST> → localhost:8000` (**이 Agent**), `<OTHER_HOST> → localhost:8083` (정체 미확인) |
 | 웹훅 대상 | `<SPRING_HOST>/api/internal/content-callback` (다른 머신의 Spring) |
-| Agent 서버 | **tmux 세션 `agent`**, 18:49 새 코드로 재기동. 로그 `../agent-server.log`. 터널 너머 status/preflight 200 |
+| Agent 서버 | **tmux 세션 `agent`**, 19:20 최신 코드로 재기동. 로그 `../agent-server.log`. 터널 너머 status/preflight 200 |
 | sudo | 비밀번호 필요 → systemd 유닛 설치는 사용자가 직접 |
 
 ### 기동·재기동
@@ -42,7 +42,7 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 - ⚠ Bash에서 `pkill -f "uvicorn app.main:app"` 는 명령 자신을 죽인다(exit 144). tmux 세션 단위로 종료할 것.
 
 ### 테스트 방법 (실제 Spring 을 건드리지 않음)
-- 단위/스모크: `pytest` (24개, 약 1.4초, 외부 서비스 불필요)
+- 단위/스모크: `pytest` (33개, 약 3초, 외부 서비스 불필요)
 - E2E: 별도 인스턴스 `:8001` + 가짜 웹훅 수신기 `:9999`, S3 비활성
   (`SPRING_WEBHOOK_URL=http://127.0.0.1:9999/cb AWS_S3_BUCKET= uvicorn app.main:app --port 8001`)
   — `.env` 는 이미 설정된 환경 변수를 덮어쓰지 않으므로 이렇게 앞에 붙이면 된다.
@@ -73,41 +73,36 @@ curl -s localhost:8000/api/system/preflight   # 기동 점검 결과
 - 2026-10-04 오전: `PROJECT_OVERVIEW.md`, 상위 `WORKSPACE.md` 작성. 터널 점검, 서버 기동.
 - 2026-10-04 오후: 안정화 커밋 12개 (`f416a89` ~ `9af89ca`, 상세는 PLAN 및 `git log`). 운영 서버 새 코드로 재기동. README·문서 갱신.
 - 의도치 않은 부작용 1건: Spring 콜백 URL 에 빈 `{}` POST 1회(200). 안건 파일 하단에 기록.
-- 2026-10-04 저녁: 사용자가 상위 폴더에 `All-Ligo_WAS` 클론 제공. **읽기만** 해서 실제 연동 동작을 `WAS_INTEGRATION.md` 에 정리. Was·Agent 코드 모두 수정 안 함(사용자 지시: 수정은 컨펌 후). 안건 후보를 Was 기준으로 재정리(아래).
+- 2026-10-04 저녁: 사용자가 상위 폴더에 `All-Ligo_WAS` 클론 제공. **읽기만** 해서 실제 연동 동작을 `WAS_INTEGRATION.md` 에 정리.
+- 2026-10-04 밤: 사용자 결정 반영. Agent 커밋 4개(`536fe87` 웹훅 자동 재시도, `2bdabf2` VIDEO 영상 없음 처리, `97c12a8` S3 재시도, `29fa5cb` 영문 요일 한글화), pytest 33개. Was 형태 그대로의 요청으로 E2E 확인(39초 SUCCESS). 운영 서버 19:20 재기동. 회의 안건 재작성, `was_todo_docs/` 생성(git 제외).
 
-## Was 확인 후 기존 안건 재평가 (사용자 컨펌 대기 — 안건 파일은 아직 안 고침)
+## 10/4 밤 사용자 결정
 
-| 기존 안건 | Was 코드로 확인한 사실 | 제안 |
-|---|---|---|
-| #1 영상 노출 | 미리보기 응답에 `s3VideoUrl`(생성 직후)·`uploadVideoUrl`(YouTube 후) 둘 다 이미 내려감 | "프론트가 어느 필드를 재생하나" 로 좁히기 |
-| #2 `mode` 값 | Was 는 웹훅 `mode` 를 안 쓰고, 요청도 항상 `TRANSFORM` | **안건에서 빼기** |
-| #3 인증 | Agent 호출에 헤더 없음. Was 콜백도 무인증 | 유지 (양방향 공유 키로 범위 확대) |
-| #4 재시도·중복 | 콜백은 중복 수신해도 결과 동일(Content·알림 중복 없음) | **Agent 단독으로 자동 재시도 구현 가능** → 안건에서 빼고 "공유" 로 |
-| #5 동시 요청 | Was 는 status 확인 안 함. T−5분 생성, T 에 업로드, 업로드 시점에 결과 없으면 재시도 없음 | "같은 시각 예약 몇 건까지 시연하나 / T−5분 유지?" 로 바꾸기 |
-| #6 ERD | 원격 최신이 06-23 → ERD 수정분 아직 없음 | 유지 |
+| 항목 | 결정 |
+|---|---|
+| 안건 `mode` 값 | 빼기 (Was 미사용) |
+| 웹훅 재시도 | Agent 에서 구현 (`536fe87`) + Was 가 알아야 할 정보는 `was_todo_docs/AGENT_CHANGES_FOR_WAS.md` 에 계속 누적 |
+| 안건 #1 영상 노출 | "S3 링크를 내릴지 YouTube 링크를 내릴지" 로 좁힘 |
+| 같은 시각 예약 | **같은 계정 내 같은 시각 예약 막기 → 회의 필수 안건**(#3). 다른 계정끼리는 이번엔 고려 안 함 |
+| 시연 생성 시점 | 예약 **5분 전** 유지 |
+| VIDEO 영상 없음 | Agent 처리: 업로드 사진으로 대체 → 그래도 없으면 FAILED (`2bdabf2`). 안건엔 안 올리고 참고로만 |
+| S3 실패 시 영상 유실 | 해결할 문제로 등록 → `was_todo_docs/WAS_TODO.md` T1 (Agent 는 S3 재시도로 완화) |
+| 실행 상태 덮어쓰기(추정) | 연동 담당(사용자) 몫 → `WAS_TODO.md` T3. 안건 아님 |
+| 취소 콘텐츠 업로드 | 치명적. 안건 #5 에 "연동 담당이 수정 예정" 으로 공유, 실제 수정은 사용자 → `WAS_TODO.md` T2 |
+| `AGENT_SERVER_URL` | 배포 환경엔 제대로 설정돼 있을 것(사용자). 확인 항목으로만 `WAS_TODO.md` T4 |
+| YouTube 채널·토큰 | 사용자가 처리. 안건 아님 |
+| `was_todo_docs/` | 사용자 담당 Was 작업을 모으는 곳. **git 제외**(공개 저장소). 사용자가 Was 프로젝트로 가져감 |
 
-### 새 안건 후보 (Was 확인으로 구체화됨)
+## 역할 구분 (사용자 설명)
 
-1. **S3 업로드 실패 시 영상 유실** (W1): Was 가 `s3VideoUrl` 이 null 이면 `localVideoPath` 도 저장하지 않아, 영상이 있는데도 YouTube 업로드가 조용히 빠진다. Was 에서 `localVideoPath` 를 항상 저장하면 해결(한 줄 수준).
-2. **VIDEO 인데 영상 없는 SUCCESS** (W2): Was 는 `GENERATED` 로 저장 → 대기열에는 정상으로 보이고 업로드는 조용히 빠짐. Agent 가 `FAILED` 로 보낼지, Was 가 VIDEO+영상없음을 처리할지.
-3. **`AGENT_SERVER_URL` 실제 값**: VIDEO 썸네일(posterUrl)이 이 주소 기준으로 만들어진다. `https://<AGENT_HOST>` 여야 함.
-4. **(Was 쪽, 추정) 실행 상태 덮어쓰기** (W5): 스케줄러 트랜잭션이 길면 콜백의 `SUCCESS` 가 `PROCESSING` 으로 덮여 대기열에 "생성 중" 으로 남을 수 있음. 재현은 안 함.
-5. **(Was 쪽) 취소한 콘텐츠도 업로드됨** (W6).
-6. YouTube 채널·OAuth 앱 소유자 (토큰 재발급·프로덕션 게시 담당).
-
-이전 후보 중 빠진 것: `/api/vision/analyze` 타임아웃(Was 가 안 씀), FAILED `error` 문구(앱에 노출 안 됨).
-
-### Agent 단독으로 할 수 있게 된 것 (사용자 컨펌 대기)
-
-- **A4 웹훅 자동 재시도**: Was 콜백이 멱등임을 확인 → 연결 오류·5xx 시 백오프 2~3회 재시도.
-- **S3 업로드 재시도**: W1 피해를 줄이기 위해 S3 업로드 실패 시 1~2회 재시도.
-- **영문 요일 → 한글 변환**: Was 가 `MONDAY` 로 보내 프롬프트에 영문 요일이 들어감. 프롬프트 품질 개선(선택).
+- Was 안에서 **웹훅 수신·FastAPI 연동 코드는 사용자 담당**. 이 부분 수정은 회의 안건이 아니라 `was_todo_docs/` 에 적어 두고 사용자가 Was 프로젝트에서 직접 진행.
+- Was 코드는 이 세션에서 수정하지 않는다(읽기 전용).
 
 ## 미해결 / 대기
 
-1. YouTube 토큰 재발급 (사용자)
+1. YouTube 토큰 재발급, OAuth 동의 화면 프로덕션 게시 (사용자)
 2. FLUX 사전 다운로드 여부 (사용자 결정, 약 30GB대 디스크·네트워크)
 3. systemd 유닛 설치 (sudo, 사용자)
-4. ~~Spring 클론 수신 대기~~ → 10/4 수신 (`../All-Ligo_WAS`, 읽기 전용으로만 사용)
-5. `<OTHER_HOST> → :8083` 정체
-6. 위 "재평가"·"새 안건 후보"·"Agent 단독 작업" 에 대한 사용자 컨펌
+4. `<OTHER_HOST> → :8083` 정체
+5. `was_todo_docs/WAS_TODO.md` T1~T4 (사용자, Was 프로젝트에서)
+6. 10/6 회의 결과 반영 (안건 #1~#4)
