@@ -75,6 +75,8 @@ class Settings:
         "http://localhost:8080/api/internal/content-callback",
     )
     WEBHOOK_TIMEOUT_SEC: int = _env_int("WEBHOOK_TIMEOUT_SEC", 5)
+    # 연결 오류·타임아웃·5xx 일 때 총 시도 횟수 (1 이면 재시도 안 함). 최악의 경우 약 22초 소요.
+    WEBHOOK_MAX_ATTEMPTS: int = _env_int("WEBHOOK_MAX_ATTEMPTS", 3)
 
     # Open-Meteo 실시간 날씨 API
     WEATHER_API_URL: str = "https://api.open-meteo.com/v1/forecast"

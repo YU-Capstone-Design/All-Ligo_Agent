@@ -124,23 +124,51 @@ class _FakeResponse:
         self.text = "server error"
 
 
-def test_웹훅이_2xx가_아니면_payload를_보관한다(isolated_static, monkeypatch):
-    monkeypatch.setattr(webhook_service.requests, "post", lambda *a, **k: _FakeResponse(500))
+@pytest.fixture
+def webhook_server(monkeypatch):
+    """requests.post 를 정해진 응답 순서로 바꾸고, 재시도 대기는 기록만 합니다."""
+    state = {"responses": [], "calls": 0, "sleeps": []}
+
+    def fake_post(*args, **kwargs):
+        response = state["responses"][min(state["calls"], len(state["responses"]) - 1)]
+        state["calls"] += 1
+        if isinstance(response, Exception):
+            raise response
+        return _FakeResponse(response)
+
+    monkeypatch.setattr(webhook_service.requests, "post", fake_post)
+    monkeypatch.setattr(webhook_service.time, "sleep", lambda sec: state["sleeps"].append(sec))
+    return state
+
+
+def test_웹훅이_계속_5xx면_3번_시도_후_payload를_보관한다(isolated_static, webhook_server):
+    webhook_server["responses"] = [500]
 
     webhook_service.send_failure("task-9", "1", "에러")
 
-    saved = isolated_static / "failed_webhooks" / "task-9.json"
-    record = json.loads(saved.read_text())
+    assert webhook_server["calls"] == 3
+    assert webhook_server["sleeps"] == [2, 5]
+    record = json.loads((isolated_static / "failed_webhooks" / "task-9.json").read_text())
     assert record["reason"].startswith("HTTP 500")
     assert record["payload"]["taskId"] == "task-9"
 
 
-def test_웹훅_성공이면_보관하지_않는다(isolated_static, monkeypatch):
-    monkeypatch.setattr(webhook_service.requests, "post", lambda *a, **k: _FakeResponse(200))
+def test_웹훅이_일시_실패_후_성공하면_보관하지_않는다(isolated_static, webhook_server):
+    webhook_server["responses"] = [ConnectionError("refused"), 502, 200]
 
     webhook_service.send_failure("task-10", "1", "에러")
 
+    assert webhook_server["calls"] == 3
     assert not (isolated_static / "failed_webhooks").exists()
+
+
+def test_웹훅_4xx는_재시도하지_않고_보관한다(isolated_static, webhook_server):
+    webhook_server["responses"] = [400]
+
+    webhook_service.send_failure("task-11", "1", "에러")
+
+    assert webhook_server["calls"] == 1
+    assert (isolated_static / "failed_webhooks" / "task-11.json").exists()
 
 
 def test_기동_점검은_개별_항목이_예외를_던져도_결과를_돌려준다(monkeypatch):
